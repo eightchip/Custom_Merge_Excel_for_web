@@ -258,7 +258,7 @@ export default function Home() {
       // 統合前の行マップを作成（差額計算用）
       const originalRowMaps = mergedRows.map((row) => {
         const map = new Map<string, string>();
-        mergedHeaders.forEach((header, idx) => {
+        mergedHeaders.forEach((header: string, idx: number) => {
           map.set(header, row[idx] || "");
         });
         return map;
