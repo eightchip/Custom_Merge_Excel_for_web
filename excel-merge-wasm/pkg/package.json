@@ -1,0 +1,15 @@
+{
+  "name": "excel-merge-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "excel_merge_wasm_bg.wasm",
+    "excel_merge_wasm.js",
+    "excel_merge_wasm.d.ts"
+  ],
+  "main": "excel_merge_wasm.js",
+  "types": "excel_merge_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
