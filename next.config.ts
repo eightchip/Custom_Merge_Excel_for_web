@@ -11,6 +11,11 @@ const nextConfig: NextConfig = {
         asyncWebAssembly: true,
       };
     }
+    // WASMファイルを適切に処理
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      fs: false,
+    };
     return config;
   },
 };
