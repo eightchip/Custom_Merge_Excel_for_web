@@ -1,65 +1,1095 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useRef } from "react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Upload, FileSpreadsheet, Download, X } from "lucide-react";
+import { readExcelFile, writeExcelFile, type TableData } from "@/lib/excel-utils";
+import { loadWasmModule, type CompareOptions, type CompareInput } from "@/lib/wasm-types";
+import * as XLSX from "xlsx";
+import JSZip from "jszip";
+
+// プレビューテーブルコンポーネント
+function PreviewTable({ data }: { data: TableData }) {
+  if (!data || data.rows.length === 0) {
+    return <div className="text-sm text-muted-foreground">データがありません</div>;
+  }
+
+  return (
+    <div className="max-h-96 overflow-auto rounded-md border">
+      <table className="w-full text-sm">
+        <thead className="bg-muted sticky top-0">
+          <tr>
+            {data.headers.map((header, idx) => (
+              <th key={idx} className="px-4 py-2 text-left font-medium border-b">
+                {header}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.rows.slice(0, 100).map((row, rowIdx) => (
+            <tr key={rowIdx} className="border-b hover:bg-muted/50">
+              {row.map((cell, cellIdx) => (
+                <td key={cellIdx} className="px-4 py-2 max-w-xs truncate" title={cell}>
+                  {cell}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {data.rows.length > 100 && (
+        <div className="p-2 text-xs text-muted-foreground text-center border-t">
+          最初の100行を表示しています（全{data.rows.length}行）
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Home() {
+  const [activeTab, setActiveTab] = useState("compare");
+
+  // Compare state
+  const [leftFile, setLeftFile] = useState<File | null>(null);
+  const [rightFile, setRightFile] = useState<File | null>(null);
+  const [leftData, setLeftData] = useState<TableData | null>(null);
+  const [rightData, setRightData] = useState<TableData | null>(null);
+  const [compareKeys, setCompareKeys] = useState<string[]>([]);
+  const [compareColumns, setCompareColumns] = useState<{ left: string; right: string; label: string }[]>([]);
+  const [previewTab, setPreviewTab] = useState<string>("summary");
+  const [compareOptions, setCompareOptions] = useState<CompareOptions>({
+    trim: true,
+    case_insensitive: false,
+  });
+  const [sortColumn, setSortColumn] = useState<string | null>(null);
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [compareResult, setCompareResult] = useState<any | null>(null);
+  const [mergedResult, setMergedResult] = useState<TableData | null>(null);
+  const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+
+  // Split state
+  const [splitFile, setSplitFile] = useState<File | null>(null);
+  const [splitData, setSplitData] = useState<TableData | null>(null);
+  const [splitKeys, setSplitKeys] = useState<string[]>([]);
+  const [splitResult, setSplitResult] = useState<any | null>(null);
+  const [selectedSplitColumns, setSelectedSplitColumns] = useState<string[]>([]);
+
+  const leftFileInputRef = useRef<HTMLInputElement>(null);
+  const rightFileInputRef = useRef<HTMLInputElement>(null);
+  const splitFileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleLeftFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setLeftFile(file);
+    try {
+      const data = await readExcelFile(file);
+      setLeftData(data);
+      if (compareKeys.length === 0 && data.headers.length > 0) {
+        setCompareKeys([data.headers[0]]);
+      }
+    } catch (error) {
+      alert(`ファイルの読み込みに失敗しました: ${error}`);
+    }
+  };
+
+  const handleRightFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setRightFile(file);
+    try {
+      const data = await readExcelFile(file);
+      setRightData(data);
+    } catch (error) {
+      alert(`ファイルの読み込みに失敗しました: ${error}`);
+    }
+  };
+
+  const handleSplitFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setSplitFile(file);
+    try {
+      const data = await readExcelFile(file);
+      setSplitData(data);
+      if (splitKeys.length === 0 && data.headers.length > 0) {
+        setSplitKeys([data.headers[0]]);
+      }
+    } catch (error) {
+      alert(`ファイルの読み込みに失敗しました: ${error}`);
+    }
+  };
+
+  // 複数キーを結合する関数
+  const combineKeys = (row: string[], keyIndices: number[], options: CompareOptions): string => {
+    const values = keyIndices.map(idx => row[idx] || "");
+    let combined = values.join("|");
+    if (options.trim) {
+      combined = combined.trim();
+    }
+    if (options.case_insensitive) {
+      combined = combined.toLowerCase();
+    }
+    return combined;
+  };
+
+  const handleCompare = async () => {
+    if (!leftData || !rightData || compareKeys.length === 0) {
+      alert("両方のファイルとキー列を選択してください");
+      return;
+    }
+
+    const wasm = await loadWasmModule();
+    if (!wasm) {
+      alert("WASMモジュールが利用できません。後でビルドしてください。");
+      return;
+    }
+
+    try {
+      // 複数キーの場合、一時的に結合キー列を作成
+      const combinedKeyName = compareKeys.join("|");
+      
+      // 左側のデータに結合キー列を追加
+      const leftKeyIndices = compareKeys.map(key => leftData.headers.indexOf(key));
+      const leftHeadersWithKey = [...leftData.headers, combinedKeyName];
+      const leftRowsWithKey = leftData.rows.map(row => [
+        ...row,
+        combineKeys(row, leftKeyIndices, compareOptions)
+      ]);
+
+      // 右側のデータに結合キー列を追加
+      const rightKeyIndices = compareKeys.map(key => rightData.headers.indexOf(key));
+      const rightHeadersWithKey = [...rightData.headers, combinedKeyName];
+      const rightRowsWithKey = rightData.rows.map(row => [
+        ...row,
+        combineKeys(row, rightKeyIndices, compareOptions)
+      ]);
+
+      const input: CompareInput = {
+        left_headers: leftHeadersWithKey,
+        left_rows: leftRowsWithKey,
+        right_headers: rightHeadersWithKey,
+        right_rows: rightRowsWithKey,
+        key: combinedKeyName,
+        options: compareOptions,
+      };
+
+      const resultJson = wasm.compare_files(JSON.stringify(input));
+      const result = JSON.parse(resultJson);
+      
+      // 結合キー列を結果から削除
+      const removeCombinedKey = (data: TableData) => {
+        const keyIdx = data.headers.indexOf(combinedKeyName);
+        if (keyIdx === -1) return data;
+        return {
+          headers: data.headers.filter((_, i) => i !== keyIdx),
+          rows: data.rows.map(row => row.filter((_, i) => i !== keyIdx))
+        };
+      };
+
+      result.result = removeCombinedKey(result.result);
+      result.left_only = removeCombinedKey(result.left_only);
+      result.right_only = removeCombinedKey(result.right_only);
+      result.duplicates = removeCombinedKey(result.duplicates);
+      
+      // マージ結果を生成（すべての行を含む）
+      let mergedHeaders = result.result.headers;
+      let mergedRows: string[][] = [
+        ...result.result.rows,
+        ...result.left_only.rows,
+        ...result.right_only.rows,
+        ...result.duplicates.rows,
+      ];
+      
+      // 結合キー列を統合（L__とR__を1つの列に）
+      const keyColumnMapping: Map<string, string> = new Map();
+      const unifiedHeaders: string[] = [];
+      const unifiedRows: string[][] = [];
+      
+      // ヘッダーを処理
+      const processedKeys = new Set<string>();
+      for (const header of mergedHeaders) {
+        // L__またはR__で始まる結合キー列を検出
+        const isKeyColumn = compareKeys.some(key => {
+          return header === `L__${key}` || header === `R__${key}`;
+        });
+        
+        if (isKeyColumn) {
+          const keyName = header.replace(/^(L__|R__)/, '');
+          if (!processedKeys.has(keyName)) {
+            unifiedHeaders.push(keyName);
+            keyColumnMapping.set(`L__${keyName}`, keyName);
+            keyColumnMapping.set(`R__${keyName}`, keyName);
+            processedKeys.add(keyName);
+          }
+        } else {
+          unifiedHeaders.push(header);
+        }
+      }
+      
+      // 行を処理
+      for (const row of mergedRows) {
+        const unifiedRow: string[] = [];
+        const rowMap = new Map<string, string>();
+        
+        // 各行の値をヘッダー名でマップ
+        mergedHeaders.forEach((header, idx) => {
+          rowMap.set(header, row[idx] || "");
+        });
+        
+        // 統合されたヘッダー順に値を取得
+        for (const header of unifiedHeaders) {
+          // 結合キー列の場合、L__またはR__から値を取得（どちらかが存在すればその値を使用）
+          if (processedKeys.has(header)) {
+            const value = rowMap.get(`L__${header}`) || rowMap.get(`R__${header}`) || "";
+            unifiedRow.push(value);
+          } else {
+            unifiedRow.push(rowMap.get(header) || "");
+          }
+        }
+        
+        unifiedRows.push(unifiedRow);
+      }
+      
+      // 統合前の行マップを作成（差額計算用）
+      const originalRowMaps = mergedRows.map((row) => {
+        const map = new Map<string, string>();
+        mergedHeaders.forEach((header, idx) => {
+          map.set(header, row[idx] || "");
+        });
+        return map;
+      });
+      
+      // 比較列の差額を計算して追加
+      let finalHeaders = [...unifiedHeaders];
+      let finalRows = unifiedRows.map((row, rowIdx) => [...row]);
+      
+      // 比較列の差額を計算
+      compareColumns.forEach(col => {
+        if (col.left && col.right && col.label) {
+          const leftHeader = `L__${col.left}`;
+          const rightHeader = `R__${col.right}`;
+          const diffColumnName = col.label || `${col.left}-${col.right}`;
+          
+          // ヘッダーに差額列を追加
+          finalHeaders.push(diffColumnName);
+          
+          // 各行で差額を計算（統合前の行マップを使用）
+          finalRows = finalRows.map((row, rowIdx) => {
+            const rowMap = originalRowMaps[rowIdx];
+            const leftValue = parseFloat(rowMap.get(leftHeader) || "0") || 0;
+            const rightValue = parseFloat(rowMap.get(rightHeader) || "0") || 0;
+            const diff = leftValue - rightValue;
+            return [...row, diff.toString()];
+          });
+        }
+      });
+      
+      // ソート処理
+      if (sortColumn) {
+        const sortIdx = finalHeaders.indexOf(sortColumn);
+        if (sortIdx !== -1) {
+          finalRows.sort((a, b) => {
+            const aVal = parseFloat(a[sortIdx]) || 0;
+            const bVal = parseFloat(b[sortIdx]) || 0;
+            return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
+          });
+        }
+      }
+      
+      const merged: TableData = {
+        headers: finalHeaders,
+        rows: finalRows,
+      };
+      setMergedResult(merged);
+      
+      // デフォルトで必須列（結合キー列）のみを選択
+      const requiredColumns = finalHeaders.filter(header => compareKeys.includes(header));
+      setSelectedColumns(requiredColumns);
+      
+      setCompareResult(result);
+      setPreviewTab("summary");
+    } catch (error) {
+      alert(`比較処理に失敗しました: ${error}`);
+    }
+  };
+
+  const handleSplit = async () => {
+    if (!splitData || splitKeys.length === 0) {
+      alert("ファイルとキー列を選択してください");
+      return;
+    }
+
+    const wasm = await loadWasmModule();
+    if (!wasm) {
+      alert("WASMモジュールが利用できません。後でビルドしてください。");
+      return;
+    }
+
+    try {
+      // 複数キーの場合、一時的に結合キー列を作成
+      const combinedKeyName = splitKeys.join("|");
+      
+      // データに結合キー列を追加
+      const keyIndices = splitKeys.map(key => splitData.headers.indexOf(key));
+      const headersWithKey = [...splitData.headers, combinedKeyName];
+      const rowsWithKey = splitData.rows.map(row => [
+        ...row,
+        combineKeys(row, keyIndices, { trim: true, case_insensitive: false })
+      ]);
+
+      const input = {
+        headers: headersWithKey,
+        rows: rowsWithKey,
+        key: combinedKeyName,
+      };
+
+      const resultJson = wasm.split_file(JSON.stringify(input));
+      const result = JSON.parse(resultJson);
+      
+      // 結合キー列を結果から削除
+      const keyIdx = headersWithKey.indexOf(combinedKeyName);
+      result.parts = result.parts.map((part: any) => ({
+        ...part,
+        table: {
+          headers: part.table.headers.filter((_: any, i: number) => i !== keyIdx),
+          rows: part.table.rows.map((row: string[]) => row.filter((_: string, i: number) => i !== keyIdx)),
+        },
+      }));
+      
+      // デフォルトでキー列のみを選択
+      if (result.parts.length > 0) {
+        const allHeaders = result.parts[0].table.headers;
+        const requiredColumns = allHeaders.filter((header: string) => splitKeys.includes(header));
+        setSelectedSplitColumns(requiredColumns);
+      }
+      
+      setSplitResult(result);
+    } catch (error) {
+      alert(`分割処理に失敗しました: ${error}`);
+    }
+  };
+
+  // 選択された列のみを含むテーブルデータを生成
+  const filterColumns = (data: TableData, columns: string[]): TableData => {
+    const columnIndices = columns.map(col => data.headers.indexOf(col)).filter(idx => idx !== -1);
+    return {
+      headers: columns.filter(col => data.headers.includes(col)),
+      rows: data.rows.map(row => columnIndices.map(idx => row[idx] || "")),
+    };
+  };
+
+  const handleDownloadCompare = async () => {
+    if (!compareResult || !mergedResult) return;
+
+    // 選択された列のみを含むマージ結果を生成
+    const filteredMerged = filterColumns(mergedResult, selectedColumns);
+
+    // 金額列（比較列、差額列）を識別
+    const amountColumnHeaders = new Set<string>();
+    compareColumns.forEach(col => {
+      if (col.left && col.right) {
+        amountColumnHeaders.add(`L__${col.left}`);
+        amountColumnHeaders.add(`R__${col.right}`);
+        if (col.label) {
+          amountColumnHeaders.add(col.label);
+        }
+      }
+    });
+    
+    // 金額列のインデックスを取得（フィルタ後のヘッダーで）
+    const amountColumnIndices = filteredMerged.headers
+      .map((header, idx) => {
+        // 比較列や差額列を検出
+        const isAmountColumn = amountColumnHeaders.has(header) || 
+                               compareColumns.some(col => col.label === header) ||
+                               (header.includes('L__') && (header.includes('残高') || header.includes('借方') || header.includes('貸方') || header.includes('金額') || header.includes('発生')));
+        return isAmountColumn ? idx : -1;
+      })
+      .filter(idx => idx !== -1);
+
+    // 合計行を計算
+    const totals: (string | number)[] = filteredMerged.headers.map((header, idx) => {
+      if (amountColumnIndices.includes(idx)) {
+        const sum = filteredMerged.rows.reduce((acc, row) => {
+          const val = parseFloat(row[idx] || "0") || 0;
+          return acc + val;
+        }, 0);
+        return sum;
+      }
+      return idx === 0 ? "合計" : "";
+    });
+
+    // Excelファイルを作成（金額列を数値として書き込み）
+    const worksheetData: any[][] = [
+      filteredMerged.headers,
+      ...filteredMerged.rows.map(row => row.map((cell, idx) => {
+        if (amountColumnIndices.includes(idx)) {
+          const num = parseFloat(cell || "0");
+          return isNaN(num) ? cell : num;
+        }
+        return cell;
+      })),
+      totals,
+    ];
+
+    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+
+    // 金額列を数値形式とカンマ区切りに設定
+    const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+    amountColumnIndices.forEach(colIdx => {
+      // データ行（ヘッダー行と合計行を除く）
+      for (let row = 1; row < range.e.r; row++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: row, c: colIdx });
+        if (worksheet[cellAddress]) {
+          const cell = worksheet[cellAddress];
+          if (typeof cell.v === 'number') {
+            // 数値形式を設定（カンマ区切り）
+            cell.z = '#,##0';
+            cell.t = 'n'; // 数値型
+          }
+        }
+      }
+      // 合計行
+      const totalRowIdx = range.e.r;
+      const cellAddress = XLSX.utils.encode_cell({ r: totalRowIdx, c: colIdx });
+      if (worksheet[cellAddress]) {
+        const cell = worksheet[cellAddress];
+        if (typeof cell.v === 'number') {
+          cell.z = '#,##0';
+          cell.t = 'n';
+        }
+      }
+    });
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+    XLSX.writeFile(workbook, "merged_result.xlsx");
+  };
+
+  const handleDownloadSplit = async () => {
+    if (!splitResult) return;
+
+    const zip = new JSZip();
+    for (const part of splitResult.parts) {
+      // ファイル名に使用できない文字を置換
+      const safeFileName = part.key_value
+        .replace(/[<>:"/\\|?*]/g, "_")
+        .replace(/\s+/g, "_");
+      
+      // 選択された列のみを含むデータを生成
+      const filteredData = filterColumns(part.table, selectedSplitColumns);
+      
+      const worksheet = XLSX.utils.aoa_to_sheet([filteredData.headers, ...filteredData.rows]);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+      const excelBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+      zip.file(`${safeFileName}.xlsx`, excelBuffer);
+    }
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "split_files.zip";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="min-h-screen bg-background p-4 md:p-8">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold">Custom Merge Excel Web</h1>
+          <p className="text-muted-foreground mt-2">高速Excelファイル統合・分割ツール</p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList>
+            <TabsTrigger value="compare">比較</TabsTrigger>
+            <TabsTrigger value="split">分割</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="compare" className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Excelファイル比較</CardTitle>
+                <CardDescription>
+                  2つのExcelファイルを比較し、差分を検出します
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">左側のファイル</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={leftFileInputRef}
+                        type="file"
+                        accept=".xlsx,.xls"
+                        onChange={handleLeftFileChange}
+                        className="hidden"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => leftFileInputRef.current?.click()}
+                      >
+                        <Upload className="mr-2 h-4 w-4" />
+                        ファイルを選択
+                      </Button>
+                      {leftFile && (
+                        <div className="flex items-center gap-2">
+                          <FileSpreadsheet className="h-4 w-4" />
+                          <span className="text-sm">{leftFile.name}</span>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => {
+                              setLeftFile(null);
+                              setLeftData(null);
+                            }}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                    {leftData && (
+                      <p className="text-xs text-muted-foreground">
+                        {leftData.headers.length}列, {leftData.rows.length}行
+                      </p>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">右側のファイル</label>
+                    <div className="flex items-center gap-2">
+                      <input
+                        ref={rightFileInputRef}
+                        type="file"
+                        accept=".xlsx,.xls"
+                        onChange={handleRightFileChange}
+                        className="hidden"
+                      />
+                      <Button
+                        variant="outline"
+                        onClick={() => rightFileInputRef.current?.click()}
+                      >
+                        <Upload className="mr-2 h-4 w-4" />
+                        ファイルを選択
+                      </Button>
+                      {rightFile && (
+                        <div className="flex items-center gap-2">
+                          <FileSpreadsheet className="h-4 w-4" />
+                          <span className="text-sm">{rightFile.name}</span>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => {
+                              setRightFile(null);
+                              setRightData(null);
+                            }}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                    {rightData && (
+                      <p className="text-xs text-muted-foreground">
+                        {rightData.headers.length}列, {rightData.rows.length}行
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {leftData && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">①キー列（複数選択可）</label>
+                    <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                      {leftData.headers.map((header, idx) => (
+                        <div key={idx} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`key-${idx}`}
+                            checked={compareKeys.includes(header)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setCompareKeys([...compareKeys, header]);
+                              } else {
+                                setCompareKeys(compareKeys.filter(k => k !== header));
+                              }
+                            }}
+                          />
+                          <label htmlFor={`key-${idx}`} className="text-sm font-medium leading-none cursor-pointer">
+                            {header}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                    {compareKeys.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        選択中: {compareKeys.join(", ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {leftData && rightData && compareKeys.length > 0 && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">③比較列を選択（差額計算用）</label>
+                    <div className="space-y-3">
+                      {compareColumns.map((col, idx) => (
+                        <div key={idx} className="flex items-center gap-2 p-2 rounded-md border bg-background">
+                          <div className="flex-1">
+                            <select
+                              value={col.left}
+                              onChange={(e) => {
+                                const newCols = [...compareColumns];
+                                newCols[idx].left = e.target.value;
+                                setCompareColumns(newCols);
+                              }}
+                              className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+                            >
+                              <option value="">左側の列を選択</option>
+                              {leftData.headers.filter(h => !compareKeys.includes(h)).map((header, i) => (
+                                <option key={i} value={header}>
+                                  {header}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <span className="text-sm">-</span>
+                          <div className="flex-1">
+                            <select
+                              value={col.right}
+                              onChange={(e) => {
+                                const newCols = [...compareColumns];
+                                newCols[idx].right = e.target.value;
+                                setCompareColumns(newCols);
+                              }}
+                              className="w-full rounded-md border border-input bg-background px-2 py-1 text-sm"
+                            >
+                              <option value="">右側の列を選択</option>
+                              {rightData.headers.filter(h => !compareKeys.includes(h)).map((header, i) => (
+                                <option key={i} value={header}>
+                                  {header}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <input
+                            type="text"
+                            value={col.label}
+                            onChange={(e) => {
+                              const newCols = [...compareColumns];
+                              newCols[idx].label = e.target.value;
+                              setCompareColumns(newCols);
+                            }}
+                            placeholder="差額列名（例: 差額）"
+                            className="w-32 rounded-md border border-input bg-background px-2 py-1 text-sm"
+                          />
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => {
+                              setCompareColumns(compareColumns.filter((_, i) => i !== idx));
+                            }}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => {
+                          setCompareColumns([...compareColumns, { left: "", right: "", label: "差額" }]);
+                        }}
+                      >
+                        比較列を追加
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <div className="space-y-3">
+                  <label className="text-sm font-medium">オプション</label>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="trim"
+                      checked={compareOptions.trim}
+                      onCheckedChange={(checked) =>
+                        setCompareOptions({ ...compareOptions, trim: checked === true })
+                      }
+                    />
+                    <label htmlFor="trim" className="text-sm font-medium leading-none">
+                      前後の空白をトリム
+                    </label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="case-insensitive"
+                      checked={compareOptions.case_insensitive}
+                      onCheckedChange={(checked) =>
+                        setCompareOptions({ ...compareOptions, case_insensitive: checked === true })
+                      }
+                    />
+                    <label htmlFor="case-insensitive" className="text-sm font-medium leading-none">
+                      大文字小文字を区別しない
+                    </label>
+                  </div>
+                </div>
+
+                <Button onClick={handleCompare} disabled={!leftData || !rightData || compareKeys.length === 0}>
+                  比較実行
+                </Button>
+
+                {compareResult && mergedResult && (
+                  <div className="space-y-4 rounded-lg border p-4">
+                    <div className="flex items-center justify-between">
+                      <h3 className="font-semibold">比較結果</h3>
+                      <Button variant="outline" size="sm" onClick={handleDownloadCompare}>
+                        <Download className="mr-2 h-4 w-4" />
+                        ⑧ダウンロード
+                      </Button>
+                    </div>
+                    
+                    {/* ソートセクション */}
+                    {compareColumns.length > 0 && (
+                      <div className="space-y-2 p-3 rounded-md border bg-muted/50">
+                        <label className="text-sm font-medium">⑥差額でソート</label>
+                        <div className="flex items-center gap-2">
+                          <select
+                            value={sortColumn || ""}
+                            onChange={(e) => setSortColumn(e.target.value || null)}
+                            className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                          >
+                            <option value="">ソート列を選択</option>
+                            {compareColumns.map((col, idx) => {
+                              if (col.left && col.right && col.label) {
+                                return (
+                                  <option key={idx} value={col.label || `${col.left}-${col.right}`}>
+                                    {col.label || `${col.left}-${col.right}`}
+                                  </option>
+                                );
+                              }
+                              return null;
+                            })}
+                          </select>
+                          <Button
+                            variant={sortDirection === "desc" ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setSortDirection("desc")}
+                          >
+                            降順
+                          </Button>
+                          <Button
+                            variant={sortDirection === "asc" ? "default" : "outline"}
+                            size="sm"
+                            onClick={() => setSortDirection("asc")}
+                          >
+                            昇順
+                          </Button>
+                          {sortColumn && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                // ソートを再適用
+                                if (mergedResult) {
+                                  const sortIdx = mergedResult.headers.indexOf(sortColumn);
+                                  if (sortIdx !== -1) {
+                                    const sortedRows = [...mergedResult.rows].sort((a, b) => {
+                                      const aVal = parseFloat(a[sortIdx]) || 0;
+                                      const bVal = parseFloat(b[sortIdx]) || 0;
+                                      return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
+                                    });
+                                    setMergedResult({
+                                      ...mergedResult,
+                                      rows: sortedRows,
+                                    });
+                                  }
+                                }
+                              }}
+                            >
+                              適用
+                            </Button>
+                          )}
+                        </div>
         </div>
-      </main>
+                    )}
+                    
+                    {/* 列選択セクション */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">④出力する列を選択（結合キーは必須）</label>
+                      <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                        {mergedResult.headers.map((header, idx) => {
+                          // 結合キー列を検出（既に統合されているので、直接比較）
+                          const isKeyColumn = compareKeys.includes(header);
+                          const isChecked = selectedColumns.includes(header);
+                          const isDisabled = isKeyColumn;
+                          
+                          return (
+                            <div key={idx} className="flex items-center space-x-2">
+                              <Checkbox
+                                id={`col-${idx}`}
+                                checked={isChecked || isDisabled}
+                                disabled={isDisabled}
+                                onCheckedChange={(checked) => {
+                                  if (!isDisabled) {
+                                    if (checked) {
+                                      setSelectedColumns([...selectedColumns, header]);
+                                    } else {
+                                      setSelectedColumns(selectedColumns.filter(c => c !== header));
+                                    }
+                                  }
+                                }}
+                              />
+                              <label 
+                                htmlFor={`col-${idx}`} 
+                                className={`text-sm font-medium leading-none cursor-pointer ${isDisabled ? 'text-muted-foreground' : ''}`}
+                              >
+                                {header}
+                                {isKeyColumn && <span className="text-xs text-muted-foreground ml-1">（必須）</span>}
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    
+                    <Tabs value={previewTab} onValueChange={setPreviewTab}>
+                      <TabsList>
+                        <TabsTrigger value="summary">概要</TabsTrigger>
+                        <TabsTrigger value="merged">マージ結果</TabsTrigger>
+                        <TabsTrigger value="result">一致</TabsTrigger>
+                        <TabsTrigger value="left_only">左のみ</TabsTrigger>
+                        <TabsTrigger value="right_only">右のみ</TabsTrigger>
+                        <TabsTrigger value="duplicates">重複</TabsTrigger>
+                      </TabsList>
+                      <TabsContent value="summary" className="mt-4">
+                        <div className="grid gap-2 text-sm">
+                          <div>一致: {compareResult.result.rows.length}件</div>
+                          <div>左のみ: {compareResult.left_only.rows.length}件</div>
+                          <div>右のみ: {compareResult.right_only.rows.length}件</div>
+                          <div>重複: {compareResult.duplicates.rows.length}件</div>
+                          <div className="pt-2 border-t mt-2">
+                            <div className="font-medium">マージ結果: {mergedResult.rows.length}件</div>
+                          </div>
+                        </div>
+                      </TabsContent>
+                      <TabsContent value="merged" className="mt-4">
+                        <PreviewTable data={filterColumns(mergedResult, selectedColumns)} />
+                      </TabsContent>
+                      <TabsContent value="result" className="mt-4">
+                        <PreviewTable data={compareResult.result} />
+                      </TabsContent>
+                      <TabsContent value="left_only" className="mt-4">
+                        <PreviewTable data={compareResult.left_only} />
+                      </TabsContent>
+                      <TabsContent value="right_only" className="mt-4">
+                        <PreviewTable data={compareResult.right_only} />
+                      </TabsContent>
+                      <TabsContent value="duplicates" className="mt-4">
+                        <PreviewTable data={compareResult.duplicates} />
+                      </TabsContent>
+                    </Tabs>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="split" className="mt-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Excelファイル分割</CardTitle>
+                <CardDescription>
+                  キー列の値でExcelファイルを分割します
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">ファイル</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={splitFileInputRef}
+                      type="file"
+                      accept=".xlsx,.xls"
+                      onChange={handleSplitFileChange}
+                      className="hidden"
+                    />
+                    <Button
+                      variant="outline"
+                      onClick={() => splitFileInputRef.current?.click()}
+                    >
+                      <Upload className="mr-2 h-4 w-4" />
+                      ファイルを選択
+                    </Button>
+                    {splitFile && (
+                      <div className="flex items-center gap-2">
+                        <FileSpreadsheet className="h-4 w-4" />
+                        <span className="text-sm">{splitFile.name}</span>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          onClick={() => {
+                            setSplitFile(null);
+                            setSplitData(null);
+                            setSplitKeys([]);
+                            setSplitResult(null);
+                          }}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                  {splitData && (
+                    <p className="text-xs text-muted-foreground">
+                      {splitData.headers.length}列, {splitData.rows.length}行
+                    </p>
+                  )}
+                </div>
+
+                {splitData && (
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">キー列（複数選択可）</label>
+                    <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                      {splitData.headers.map((header, idx) => (
+                        <div key={idx} className="flex items-center space-x-2">
+                          <Checkbox
+                            id={`split-key-${idx}`}
+                            checked={splitKeys.includes(header)}
+                            onCheckedChange={(checked) => {
+                              if (checked) {
+                                setSplitKeys([...splitKeys, header]);
+                              } else {
+                                setSplitKeys(splitKeys.filter(k => k !== header));
+                              }
+                            }}
+                          />
+                          <label htmlFor={`split-key-${idx}`} className="text-sm font-medium leading-none cursor-pointer">
+                            {header}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                    {splitKeys.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        選択中: {splitKeys.join(", ")}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                <Button onClick={handleSplit} disabled={!splitData || splitKeys.length === 0}>
+                  分割実行
+                </Button>
+
+                {splitResult && splitResult.parts.length > 0 && (
+                  <div className="space-y-4 rounded-lg border p-4">
+                    <div>
+                      <h3 className="font-semibold">分割結果</h3>
+                    </div>
+                    <div className="text-sm">
+                      {splitResult.parts.length}個のファイルに分割されました
+                    </div>
+                    
+                    {/* 列選択セクション */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">出力する列を選択（結合キーは必須）</label>
+                      <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                        {splitResult.parts[0].table.headers.map((header: string, idx: number) => {
+                          const isKeyColumn = splitKeys.includes(header);
+                          const isChecked = selectedSplitColumns.includes(header);
+                          const isDisabled = isKeyColumn;
+                          
+                          return (
+                            <div key={idx} className="flex items-center space-x-2">
+                              <Checkbox
+                                id={`split-col-${idx}`}
+                                checked={isChecked || isDisabled}
+                                disabled={isDisabled}
+                                onCheckedChange={(checked) => {
+                                  if (!isDisabled) {
+                                    if (checked) {
+                                      setSelectedSplitColumns([...selectedSplitColumns, header]);
+                                    } else {
+                                      setSelectedSplitColumns(selectedSplitColumns.filter(c => c !== header));
+                                    }
+                                  }
+                                }}
+                              />
+                              <label 
+                                htmlFor={`split-col-${idx}`} 
+                                className={`text-sm font-medium leading-none cursor-pointer ${isDisabled ? 'text-muted-foreground' : ''}`}
+                              >
+                                {header}
+                                {isKeyColumn && <span className="text-xs text-muted-foreground ml-1">（必須）</span>}
+                              </label>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    
+                    {/* プレビューセクション */}
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">プレビュー</label>
+                      <div className="max-h-96 overflow-auto rounded-md border">
+                        <table className="w-full text-sm">
+                          <thead className="bg-muted sticky top-0">
+                            <tr>
+                              <th className="px-4 py-2 text-left font-medium border-b">ファイル名</th>
+                              <th className="px-4 py-2 text-left font-medium border-b">行数</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {splitResult.parts.slice(0, 100).map((part: any, idx: number) => (
+                              <tr key={idx} className="border-b hover:bg-muted/50">
+                                <td className="px-4 py-2 max-w-xs truncate" title={part.key_value}>
+                                  {part.key_value}
+                                </td>
+                                <td className="px-4 py-2">{part.table.rows.length}行</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                        {splitResult.parts.length > 100 && (
+                          <div className="p-2 text-xs text-muted-foreground text-center border-t">
+                            最初の100件を表示しています（全{splitResult.parts.length}件）
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    
+                    {/* データプレビュー（最初のファイルの内容を表示） */}
+                    {splitResult.parts.length > 0 && (
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">データプレビュー（最初のファイル）</label>
+                        <PreviewTable data={filterColumns(splitResult.parts[0].table, selectedSplitColumns)} />
+                      </div>
+                    )}
+                    
+                    {/* ダウンロードボタン */}
+                    <div className="flex justify-end">
+                      <Button variant="outline" size="sm" onClick={handleDownloadSplit}>
+                        <Download className="mr-2 h-4 w-4" />
+                        ZIPでダウンロード
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+        </div>
     </div>
   );
 }
