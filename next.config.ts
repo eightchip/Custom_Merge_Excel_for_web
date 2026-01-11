@@ -18,8 +18,6 @@ const nextConfig: NextConfig = {
     };
     return config;
   },
-  // 静的アセットの最適化
-  swcMinify: true,
 };
 
 export default nextConfig;
