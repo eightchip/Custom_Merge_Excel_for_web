@@ -237,7 +237,7 @@ export default function Home() {
         const rowMap = new Map<string, string>();
         
         // 各行の値をヘッダー名でマップ
-        mergedHeaders.forEach((header, idx) => {
+        mergedHeaders.forEach((header: string, idx: number) => {
           rowMap.set(header, row[idx] || "");
         });
         

@@ -1,3 +1,4 @@
-excel-merge-wasm/pkg/
+# WASM build artifacts (pkg/ is needed for deployment)
+# excel-merge-wasm/pkg/
 excel-merge-wasm/target/
 
