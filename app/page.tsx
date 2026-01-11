@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -60,16 +60,59 @@ export default function Home() {
   const [rightData, setRightData] = useState<TableData | null>(null);
   const [compareKeys, setCompareKeys] = useState<string[]>([]);
   const [compareColumns, setCompareColumns] = useState<{ left: string; right: string; label: string }[]>([]);
-  const [previewTab, setPreviewTab] = useState<string>("summary");
   const [compareOptions, setCompareOptions] = useState<CompareOptions>({
     trim: true,
     case_insensitive: false,
   });
-  const [sortColumn, setSortColumn] = useState<string | null>(null);
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [compareResult, setCompareResult] = useState<any | null>(null);
   const [mergedResult, setMergedResult] = useState<TableData | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+  const [sortColumns, setSortColumns] = useState<{ column: string; direction: "asc" | "desc" }[]>([]);
+  
+  // 選択された列のみを含むテーブルデータを生成
+  const filterColumns = (data: TableData, columns: string[]): TableData => {
+    const columnIndices = columns.map(col => data.headers.indexOf(col)).filter(idx => idx !== -1);
+    return {
+      headers: columns.filter(col => data.headers.includes(col)),
+      rows: data.rows.map(row => columnIndices.map(idx => row[idx] || "")),
+    };
+  };
+  
+  // リアルタイムソート処理（Hooksの順序を保つため、条件分岐の外に配置）
+  const sortedMergedResult = useMemo(() => {
+    if (!mergedResult) return null;
+    
+    // 選択された列でフィルタリング
+    const filteredData = filterColumns(mergedResult, selectedColumns);
+    
+    if (sortColumns.length === 0) return filteredData;
+    
+    const sortedRows = [...filteredData.rows].sort((a, b) => {
+      for (const sortCol of sortColumns) {
+        const sortIdx = filteredData.headers.indexOf(sortCol.column);
+        if (sortIdx === -1) continue;
+        
+        const aVal = parseFloat(a[sortIdx]) || 0;
+        const bVal = parseFloat(b[sortIdx]) || 0;
+        // 文字列の場合は文字列比較
+        if (isNaN(aVal) || isNaN(bVal)) {
+          const aStr = String(a[sortIdx] || "");
+          const bStr = String(b[sortIdx] || "");
+          const result = sortCol.direction === "asc" ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+          if (result !== 0) return result;
+        } else {
+          const result = sortCol.direction === "asc" ? aVal - bVal : bVal - aVal;
+          if (result !== 0) return result;
+        }
+      }
+      return 0;
+    });
+    
+    return {
+      ...filteredData,
+      rows: sortedRows,
+    };
+  }, [mergedResult, selectedColumns, sortColumns]);
 
   // Split state
   const [splitFile, setSplitFile] = useState<File | null>(null);
@@ -77,6 +120,44 @@ export default function Home() {
   const [splitKeys, setSplitKeys] = useState<string[]>([]);
   const [splitResult, setSplitResult] = useState<any | null>(null);
   const [selectedSplitColumns, setSelectedSplitColumns] = useState<string[]>([]);
+  const [splitNumericColumns, setSplitNumericColumns] = useState<string[]>([]);
+  const [splitSortColumns, setSplitSortColumns] = useState<{ column: string; direction: "asc" | "desc" }[]>([]);
+  
+  // 分割モードのソート処理（Hooksの順序を保つため、条件分岐の外に配置）
+  const sortedSplitPreviewData = useMemo(() => {
+    if (!splitResult || splitResult.parts.length === 0) return null;
+    
+    // 最初のファイルのデータをソート（選択された列でフィルタリング済み）
+    const firstPart = splitResult.parts[0];
+    const filteredData = filterColumns(firstPart.table, selectedSplitColumns);
+    
+    if (splitSortColumns.length === 0) return filteredData;
+    
+    const sortedRows = [...filteredData.rows].sort((a, b) => {
+      for (const sortCol of splitSortColumns) {
+        const sortIdx = filteredData.headers.indexOf(sortCol.column);
+        if (sortIdx === -1) continue;
+        
+        const aVal = parseFloat(a[sortIdx]) || 0;
+        const bVal = parseFloat(b[sortIdx]) || 0;
+        if (isNaN(aVal) || isNaN(bVal)) {
+          const aStr = String(a[sortIdx] || "");
+          const bStr = String(b[sortIdx] || "");
+          const result = sortCol.direction === "asc" ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+          if (result !== 0) return result;
+        } else {
+          const result = sortCol.direction === "asc" ? aVal - bVal : bVal - aVal;
+          if (result !== 0) return result;
+        }
+      }
+      return 0;
+    });
+    
+    return {
+      ...filteredData,
+      rows: sortedRows,
+    };
+  }, [splitResult, selectedSplitColumns, splitSortColumns]);
 
   const leftFileInputRef = useRef<HTMLInputElement>(null);
   const rightFileInputRef = useRef<HTMLInputElement>(null);
@@ -86,14 +167,18 @@ export default function Home() {
     const file = e.target.files?.[0];
     if (!file) return;
     setLeftFile(file);
+    setLeftData(null); // リセット
     try {
       const data = await readExcelFile(file);
+      console.log('左側ファイル読み込み成功:', data.headers.length, '列', data.rows.length, '行');
       setLeftData(data);
       if (compareKeys.length === 0 && data.headers.length > 0) {
         setCompareKeys([data.headers[0]]);
       }
     } catch (error) {
+      console.error('左側ファイル読み込みエラー:', error);
       alert(`ファイルの読み込みに失敗しました: ${error}`);
+      setLeftFile(null);
     }
   };
 
@@ -101,11 +186,15 @@ export default function Home() {
     const file = e.target.files?.[0];
     if (!file) return;
     setRightFile(file);
+    setRightData(null); // リセット
     try {
       const data = await readExcelFile(file);
+      console.log('右側ファイル読み込み成功:', data.headers.length, '列', data.rows.length, '行');
       setRightData(data);
     } catch (error) {
+      console.error('右側ファイル読み込みエラー:', error);
       alert(`ファイルの読み込みに失敗しました: ${error}`);
+      setRightFile(null);
     }
   };
 
@@ -289,18 +378,7 @@ export default function Home() {
         }
       });
       
-      // ソート処理
-      if (sortColumn) {
-        const sortIdx = finalHeaders.indexOf(sortColumn);
-        if (sortIdx !== -1) {
-          finalRows.sort((a, b) => {
-            const aVal = parseFloat(a[sortIdx]) || 0;
-            const bVal = parseFloat(b[sortIdx]) || 0;
-            return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
-          });
-        }
-      }
-      
+      // ソート処理は後でリアルタイムで行うため、ここではソートしない
       const merged: TableData = {
         headers: finalHeaders,
         rows: finalRows,
@@ -312,7 +390,6 @@ export default function Home() {
       setSelectedColumns(requiredColumns);
       
       setCompareResult(result);
-      setPreviewTab("summary");
     } catch (error) {
       alert(`比較処理に失敗しました: ${error}`);
     }
@@ -374,20 +451,11 @@ export default function Home() {
     }
   };
 
-  // 選択された列のみを含むテーブルデータを生成
-  const filterColumns = (data: TableData, columns: string[]): TableData => {
-    const columnIndices = columns.map(col => data.headers.indexOf(col)).filter(idx => idx !== -1);
-    return {
-      headers: columns.filter(col => data.headers.includes(col)),
-      rows: data.rows.map(row => columnIndices.map(idx => row[idx] || "")),
-    };
-  };
-
   const handleDownloadCompare = async () => {
     if (!compareResult || !mergedResult) return;
 
-    // 選択された列のみを含むマージ結果を生成
-    const filteredMerged = filterColumns(mergedResult, selectedColumns);
+    // ソート済みの結果を使用（sortedMergedResultは既に選択列でフィルタリング済み、ソート済み）
+    const filteredMerged = sortedMergedResult || filterColumns(mergedResult, selectedColumns);
 
     // 金額列（比較列、差額列）を識別
     const amountColumnHeaders = new Set<string>();
@@ -482,9 +550,103 @@ export default function Home() {
         .replace(/\s+/g, "_");
       
       // 選択された列のみを含むデータを生成
-      const filteredData = filterColumns(part.table, selectedSplitColumns);
+      let filteredData = filterColumns(part.table, selectedSplitColumns);
       
-      const worksheet = XLSX.utils.aoa_to_sheet([filteredData.headers, ...filteredData.rows]);
+      // ソート処理（3列まで順位指定）
+      if (splitSortColumns.length > 0) {
+        const sortedRows = [...filteredData.rows].sort((a, b) => {
+          for (const sortCol of splitSortColumns) {
+            const sortIdx = filteredData.headers.indexOf(sortCol.column);
+            if (sortIdx === -1) continue;
+            
+            const aVal = parseFloat(a[sortIdx]) || 0;
+            const bVal = parseFloat(b[sortIdx]) || 0;
+            if (isNaN(aVal) || isNaN(bVal)) {
+              const aStr = String(a[sortIdx] || "");
+              const bStr = String(b[sortIdx] || "");
+              const result = sortCol.direction === "asc" ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+              if (result !== 0) return result;
+            } else {
+              const result = sortCol.direction === "asc" ? aVal - bVal : bVal - aVal;
+              if (result !== 0) return result;
+            }
+          }
+          return 0;
+        });
+        filteredData = {
+          ...filteredData,
+          rows: sortedRows,
+        };
+      }
+      
+      // 数値列を数値として書き込み
+      const worksheetData: any[][] = [
+        filteredData.headers,
+        ...filteredData.rows.map(row => row.map((cell, cellIdx) => {
+          const header = filteredData.headers[cellIdx];
+          if (splitNumericColumns.includes(header)) {
+            const num = parseFloat(cell || "0");
+            return isNaN(num) ? cell : num;
+          }
+          return cell;
+        })),
+      ];
+      
+      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+      
+      // 数値列を数値形式とカンマ区切りに設定
+      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+      const numericColumnIndices = filteredData.headers
+        .map((header, idx) => splitNumericColumns.includes(header) ? idx : -1)
+        .filter(idx => idx !== -1);
+      
+      numericColumnIndices.forEach(colIdx => {
+        // データ行（ヘッダー行を除く）
+        for (let row = 1; row <= range.e.r; row++) {
+          const cellAddress = XLSX.utils.encode_cell({ r: row, c: colIdx });
+          if (worksheet[cellAddress]) {
+            const cell = worksheet[cellAddress];
+            if (typeof cell.v === 'number') {
+              // 数値形式を設定（カンマ区切り）
+              cell.z = '#,##0';
+              cell.t = 'n'; // 数値型
+            }
+          }
+        }
+      });
+      
+      // 合計行を追加（数値列のみ）
+      if (numericColumnIndices.length > 0) {
+        const totals: (string | number)[] = filteredData.headers.map((header, idx) => {
+          if (splitNumericColumns.includes(header)) {
+            const sum = filteredData.rows.reduce((acc, row) => {
+              const val = parseFloat(row[idx] || "0") || 0;
+              return acc + val;
+            }, 0);
+            return sum;
+          }
+          return idx === 0 ? "合計" : "";
+        });
+        
+        const totalRowIdx = range.e.r + 1;
+        totals.forEach((value, colIdx) => {
+          const cellAddress = XLSX.utils.encode_cell({ r: totalRowIdx, c: colIdx });
+          if (!worksheet[cellAddress]) {
+            worksheet[cellAddress] = {};
+          }
+          const cell = worksheet[cellAddress];
+          cell.v = value;
+          cell.t = typeof value === 'number' ? 'n' : 's';
+          if (typeof value === 'number') {
+            cell.z = '#,##0';
+          }
+        });
+        worksheet['!ref'] = XLSX.utils.encode_range({
+          s: { r: 0, c: 0 },
+          e: { r: totalRowIdx, c: range.e.c }
+        });
+      }
+      
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
       const excelBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
@@ -744,84 +906,28 @@ export default function Home() {
                   </div>
                 </div>
 
-                <Button onClick={handleCompare} disabled={!leftData || !rightData || compareKeys.length === 0}>
-                  比較実行
-                </Button>
+                <div className="space-y-2">
+                  <Button 
+                    onClick={handleCompare} 
+                    disabled={!leftData || !rightData || compareKeys.length === 0}
+                    className="w-full"
+                  >
+                    比較実行
+                  </Button>
+                  {(!leftData || !rightData || compareKeys.length === 0) && (
+                    <p className="text-xs text-muted-foreground">
+                      {!leftData && "⚠ 左側のファイルを選択してください。 "}
+                      {!rightData && "⚠ 右側のファイルを選択してください。 "}
+                      {compareKeys.length === 0 && "⚠ キー列を選択してください。"}
+                    </p>
+                  )}
+                </div>
 
                 {compareResult && mergedResult && (
                   <div className="space-y-4 rounded-lg border p-4">
-                    <div className="flex items-center justify-between">
+                    <div>
                       <h3 className="font-semibold">比較結果</h3>
-                      <Button variant="outline" size="sm" onClick={handleDownloadCompare}>
-                        <Download className="mr-2 h-4 w-4" />
-                        ⑧ダウンロード
-                      </Button>
                     </div>
-                    
-                    {/* ソートセクション */}
-                    {compareColumns.length > 0 && (
-                      <div className="space-y-2 p-3 rounded-md border bg-muted/50">
-                        <label className="text-sm font-medium">⑥差額でソート</label>
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={sortColumn || ""}
-                            onChange={(e) => setSortColumn(e.target.value || null)}
-                            className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
-                          >
-                            <option value="">ソート列を選択</option>
-                            {compareColumns.map((col, idx) => {
-                              if (col.left && col.right && col.label) {
-                                return (
-                                  <option key={idx} value={col.label || `${col.left}-${col.right}`}>
-                                    {col.label || `${col.left}-${col.right}`}
-                                  </option>
-                                );
-                              }
-                              return null;
-                            })}
-                          </select>
-                          <Button
-                            variant={sortDirection === "desc" ? "default" : "outline"}
-                            size="sm"
-                            onClick={() => setSortDirection("desc")}
-                          >
-                            降順
-                          </Button>
-                          <Button
-                            variant={sortDirection === "asc" ? "default" : "outline"}
-                            size="sm"
-                            onClick={() => setSortDirection("asc")}
-                          >
-                            昇順
-                          </Button>
-                          {sortColumn && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => {
-                                // ソートを再適用
-                                if (mergedResult) {
-                                  const sortIdx = mergedResult.headers.indexOf(sortColumn);
-                                  if (sortIdx !== -1) {
-                                    const sortedRows = [...mergedResult.rows].sort((a, b) => {
-                                      const aVal = parseFloat(a[sortIdx]) || 0;
-                                      const bVal = parseFloat(b[sortIdx]) || 0;
-                                      return sortDirection === "asc" ? aVal - bVal : bVal - aVal;
-                                    });
-                                    setMergedResult({
-                                      ...mergedResult,
-                                      rows: sortedRows,
-                                    });
-                                  }
-                                }
-                              }}
-                            >
-                              適用
-                            </Button>
-                          )}
-                        </div>
-        </div>
-                    )}
                     
                     {/* 列選択セクション */}
                     <div className="space-y-2">
@@ -862,43 +968,91 @@ export default function Home() {
                       </div>
                     </div>
                     
-                    <Tabs value={previewTab} onValueChange={setPreviewTab}>
-                      <TabsList>
-                        <TabsTrigger value="summary">概要</TabsTrigger>
-                        <TabsTrigger value="merged">マージ結果</TabsTrigger>
-                        <TabsTrigger value="result">一致</TabsTrigger>
-                        <TabsTrigger value="left_only">左のみ</TabsTrigger>
-                        <TabsTrigger value="right_only">右のみ</TabsTrigger>
-                        <TabsTrigger value="duplicates">重複</TabsTrigger>
-                      </TabsList>
-                      <TabsContent value="summary" className="mt-4">
-                        <div className="grid gap-2 text-sm">
-                          <div>一致: {compareResult.result.rows.length}件</div>
-                          <div>左のみ: {compareResult.left_only.rows.length}件</div>
-                          <div>右のみ: {compareResult.right_only.rows.length}件</div>
-                          <div>重複: {compareResult.duplicates.rows.length}件</div>
-                          <div className="pt-2 border-t mt-2">
-                            <div className="font-medium">マージ結果: {mergedResult.rows.length}件</div>
-                          </div>
+                    {/* マージ結果とソートセクション */}
+                    <div className="space-y-4">
+                      {/* ソートセクション */}
+                      <div className="space-y-2 p-3 rounded-md border bg-muted/50">
+                        <label className="text-sm font-medium">ソート（最大3列、選択列のみ）</label>
+                        <div className="space-y-2">
+                          {[0, 1, 2].map((idx) => {
+                            const sortCol = sortColumns[idx] || { column: "", direction: "asc" as const };
+                            return (
+                              <div key={idx} className="flex items-center gap-2">
+                                <span className="text-xs text-muted-foreground w-8">{idx + 1}位:</span>
+                                <select
+                                  value={sortCol.column}
+                                  onChange={(e) => {
+                                    const newSortCols = [...sortColumns];
+                                    if (e.target.value) {
+                                      newSortCols[idx] = { column: e.target.value, direction: sortCol.direction };
+                                      setSortColumns(newSortCols.slice(0, 3));
+                                    } else {
+                                      newSortCols.splice(idx, 1);
+                                      setSortColumns(newSortCols);
+                                    }
+                                  }}
+                                  className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                >
+                                  <option value="">ソート列を選択</option>
+                                  {(sortedMergedResult || filterColumns(mergedResult, selectedColumns)).headers.map((header, hIdx) => (
+                                    <option key={hIdx} value={header}>
+                                      {header}
+                                    </option>
+                                  ))}
+                                </select>
+                                <Button
+                                  variant={sortCol.direction === "desc" ? "default" : "outline"}
+                                  size="sm"
+                                  onClick={() => {
+                                    const newSortCols = [...sortColumns];
+                                    newSortCols[idx] = { ...sortCol, direction: "desc" };
+                                    setSortColumns(newSortCols);
+                                  }}
+                                  disabled={!sortCol.column}
+                                >
+                                  降順
+                                </Button>
+                                <Button
+                                  variant={sortCol.direction === "asc" ? "default" : "outline"}
+                                  size="sm"
+                                  onClick={() => {
+                                    const newSortCols = [...sortColumns];
+                                    newSortCols[idx] = { ...sortCol, direction: "asc" };
+                                    setSortColumns(newSortCols);
+                                  }}
+                                  disabled={!sortCol.column}
+                                >
+                                  昇順
+                                </Button>
+                                {sortCol.column && (
+                                  <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => {
+                                      const newSortCols = [...sortColumns];
+                                      newSortCols.splice(idx, 1);
+                                      setSortColumns(newSortCols);
+                                    }}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
-                      </TabsContent>
-                      <TabsContent value="merged" className="mt-4">
-                        <PreviewTable data={filterColumns(mergedResult, selectedColumns)} />
-                      </TabsContent>
-                      <TabsContent value="result" className="mt-4">
-                        <PreviewTable data={compareResult.result} />
-                      </TabsContent>
-                      <TabsContent value="left_only" className="mt-4">
-                        <PreviewTable data={compareResult.left_only} />
-                      </TabsContent>
-                      <TabsContent value="right_only" className="mt-4">
-                        <PreviewTable data={compareResult.right_only} />
-                      </TabsContent>
-                      <TabsContent value="duplicates" className="mt-4">
-                        <PreviewTable data={compareResult.duplicates} />
-                      </TabsContent>
-                    </Tabs>
-                  </div>
+                      </div>
+                      <PreviewTable data={sortedMergedResult || filterColumns(mergedResult, selectedColumns)} />
+                    </div>
+                    
+                    {/* ダウンロードボタン */}
+                    <div className="flex justify-end">
+                      <Button variant="outline" size="sm" onClick={handleDownloadCompare}>
+                        <Download className="mr-2 h-4 w-4" />
+                        ダウンロード
+                      </Button>
+                    </div>
+        </div>
                 )}
               </CardContent>
             </Card>
@@ -1007,6 +1161,7 @@ export default function Home() {
                         {splitResult.parts[0].table.headers.map((header: string, idx: number) => {
                           const isKeyColumn = splitKeys.includes(header);
                           const isChecked = selectedSplitColumns.includes(header);
+                          const isNumeric = splitNumericColumns.includes(header);
                           const isDisabled = isKeyColumn;
                           
                           return (
@@ -1021,16 +1176,39 @@ export default function Home() {
                                       setSelectedSplitColumns([...selectedSplitColumns, header]);
                                     } else {
                                       setSelectedSplitColumns(selectedSplitColumns.filter(c => c !== header));
+                                      // 数値列の選択も解除
+                                      setSplitNumericColumns(splitNumericColumns.filter(c => c !== header));
                                     }
                                   }
                                 }}
                               />
+                              {isChecked && !isKeyColumn && (
+                                <Checkbox
+                                  id={`split-numeric-${idx}`}
+                                  checked={isNumeric}
+                                  onCheckedChange={(checked) => {
+                                    if (checked) {
+                                      setSplitNumericColumns([...splitNumericColumns, header]);
+                                    } else {
+                                      setSplitNumericColumns(splitNumericColumns.filter(c => c !== header));
+                                    }
+                                  }}
+                                  className="ml-2"
+                                />
+                              )}
                               <label 
                                 htmlFor={`split-col-${idx}`} 
                                 className={`text-sm font-medium leading-none cursor-pointer ${isDisabled ? 'text-muted-foreground' : ''}`}
                               >
                                 {header}
                                 {isKeyColumn && <span className="text-xs text-muted-foreground ml-1">（必須）</span>}
+                                {isChecked && !isKeyColumn && (
+                                  <span className="text-xs text-muted-foreground ml-2">
+                                    <label htmlFor={`split-numeric-${idx}`} className="cursor-pointer">
+                                      （数値列: {isNumeric ? '✓' : 'なし'}）
+                                    </label>
+                                  </span>
+                                )}
                               </label>
                             </div>
                           );
@@ -1068,11 +1246,125 @@ export default function Home() {
                       </div>
                     </div>
                     
-                    {/* データプレビュー（最初のファイルの内容を表示） */}
+                    {/* データプレビュー（最初の5個のファイルの内容を表示） */}
                     {splitResult.parts.length > 0 && (
-                      <div className="space-y-2">
-                        <label className="text-sm font-medium">データプレビュー（最初のファイル）</label>
-                        <PreviewTable data={filterColumns(splitResult.parts[0].table, selectedSplitColumns)} />
+                      <div className="space-y-4">
+                        <label className="text-sm font-medium">データプレビュー（最初の5個のファイル）</label>
+                        
+                        {splitResult.parts.slice(0, 5).map((part: any, partIdx: number) => {
+                          // 選択された列でフィルタリング
+                          const filteredData = filterColumns(part.table, selectedSplitColumns);
+                          
+                          // ソート処理
+                          let sortedData = filteredData;
+                          if (splitSortColumns.length > 0) {
+                            const sortedRows = [...filteredData.rows].sort((a, b) => {
+                              for (const sortCol of splitSortColumns) {
+                                const sortIdx = filteredData.headers.indexOf(sortCol.column);
+                                if (sortIdx === -1) continue;
+                                
+                                const aVal = parseFloat(a[sortIdx]) || 0;
+                                const bVal = parseFloat(b[sortIdx]) || 0;
+                                if (isNaN(aVal) || isNaN(bVal)) {
+                                  const aStr = String(a[sortIdx] || "");
+                                  const bStr = String(b[sortIdx] || "");
+                                  const result = sortCol.direction === "asc" ? aStr.localeCompare(bStr) : bStr.localeCompare(aStr);
+                                  if (result !== 0) return result;
+                                } else {
+                                  const result = sortCol.direction === "asc" ? aVal - bVal : bVal - aVal;
+                                  if (result !== 0) return result;
+                                }
+                              }
+                              return 0;
+                            });
+                            sortedData = {
+                              ...filteredData,
+                              rows: sortedRows,
+                            };
+                          }
+                          
+                          return (
+                            <div key={partIdx} className="space-y-2">
+                              <div className="text-sm font-medium border-b pb-1">
+                                {part.key_value} ({part.table.rows.length}行)
+                              </div>
+                              <PreviewTable data={sortedData} />
+                            </div>
+                          );
+                        })}
+                        
+                        {/* ソートセクション（全ファイル共通） */}
+                        <div className="space-y-2 p-3 rounded-md border bg-muted/50">
+                          <label className="text-sm font-medium">ソート（最大3列、選択列のみ）</label>
+                          <div className="space-y-2">
+                            {[0, 1, 2].map((idx) => {
+                              const sortCol = splitSortColumns[idx] || { column: "", direction: "asc" as const };
+                              return (
+                                <div key={idx} className="flex items-center gap-2">
+                                  <span className="text-xs text-muted-foreground w-8">{idx + 1}位:</span>
+                                  <select
+                                    value={sortCol.column}
+                                    onChange={(e) => {
+                                      const newSortCols = [...splitSortColumns];
+                                      if (e.target.value) {
+                                        newSortCols[idx] = { column: e.target.value, direction: sortCol.direction };
+                                        setSplitSortColumns(newSortCols.slice(0, 3));
+                                      } else {
+                                        newSortCols.splice(idx, 1);
+                                        setSplitSortColumns(newSortCols);
+                                      }
+                                    }}
+                                    className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
+                                  >
+                                    <option value="">ソート列を選択</option>
+                                    {splitResult.parts.length > 0 && filterColumns(splitResult.parts[0].table, selectedSplitColumns).headers.map((header: string, hIdx: number) => (
+                                      <option key={hIdx} value={header}>
+                                        {header}
+                                      </option>
+                                    ))}
+                                  </select>
+                                  <Button
+                                    variant={sortCol.direction === "desc" ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() => {
+                                      const newSortCols = [...splitSortColumns];
+                                      newSortCols[idx] = { ...sortCol, direction: "desc" };
+                                      setSplitSortColumns(newSortCols);
+                                    }}
+                                    disabled={!sortCol.column}
+                                  >
+                                    降順
+                                  </Button>
+                                  <Button
+                                    variant={sortCol.direction === "asc" ? "default" : "outline"}
+                                    size="sm"
+                                    onClick={() => {
+                                      const newSortCols = [...splitSortColumns];
+                                      newSortCols[idx] = { ...sortCol, direction: "asc" };
+                                      setSplitSortColumns(newSortCols);
+                                    }}
+                                    disabled={!sortCol.column}
+                                  >
+                                    昇順
+                                  </Button>
+                                  {sortCol.column && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      onClick={() => {
+                                        const newSortCols = [...splitSortColumns];
+                                        newSortCols.splice(idx, 1);
+                                        setSplitSortColumns(newSortCols);
+                                      }}
+                                    >
+                                      <X className="h-4 w-4" />
+                                    </Button>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
                     )}
                     
