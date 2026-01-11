@@ -1,9 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Turbopack用の設定（WASMは自動的にサポートされます）
-  turbopack: {},
-  // Webpack用の設定（--webpackフラグ使用時）
+  // Webpack設定（本番ビルドで使用）
   webpack: (config, { isServer }) => {
     if (!isServer) {
       config.experiments = {
@@ -18,6 +16,10 @@ const nextConfig: NextConfig = {
     };
     return config;
   },
+  // 静的アセットの最適化
+  poweredByHeader: false,
+  // 圧縮設定
+  compress: true,
 };
 
 export default nextConfig;
