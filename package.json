@@ -7,8 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "build:wasm": "cd excel-merge-wasm && wasm-pack build --target web --out-dir pkg",
-    "prebuild": "npm run build:wasm"
+    "build:wasm": "cd excel-merge-wasm && wasm-pack build --target web --out-dir pkg"
   },
   "dependencies": {
     "@radix-ui/react-checkbox": "^1.3.3",
