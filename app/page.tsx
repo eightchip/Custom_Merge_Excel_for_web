@@ -1,15 +1,24 @@
 "use client";
 
-import { useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Upload, FileSpreadsheet, Download, X } from "lucide-react";
+import { Upload, FileSpreadsheet, Download, X, ChevronUp, ChevronDown, Sliders } from "lucide-react";
 import { readExcelFile, writeExcelFile, type TableData } from "@/lib/excel-utils";
 import { loadWasmModule, type CompareOptions, type CompareInput } from "@/lib/wasm-types";
 import * as XLSX from "xlsx";
 import JSZip from "jszip";
+
+type Theme = "light" | "dark" | "ocean" | "forest";
+
+const themes: { id: Theme; name: string; description: string }[] = [
+  { id: "light", name: "ライト", description: "白背景・黒文字" },
+  { id: "dark", name: "ダーク", description: "黒背景・白文字" },
+  { id: "ocean", name: "オーシャン", description: "青緑系" },
+  { id: "forest", name: "フォレスト", description: "緑系" },
+];
 
 // プレビューテーブルコンポーネント
 function PreviewTable({ data }: { data: TableData }) {
@@ -52,6 +61,8 @@ function PreviewTable({ data }: { data: TableData }) {
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("compare");
+  const [currentTheme, setCurrentTheme] = useState<Theme>("dark");
+  const [showThemeMenu, setShowThemeMenu] = useState(false);
 
   // Compare state
   const [leftFile, setLeftFile] = useState<File | null>(null);
@@ -64,6 +75,7 @@ export default function Home() {
     trim: true,
     case_insensitive: false,
   });
+  const [sortByKeys, setSortByKeys] = useState(true); // キー列でソートするかどうか
   const [compareResult, setCompareResult] = useState<any | null>(null);
   const [mergedResult, setMergedResult] = useState<TableData | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
@@ -162,6 +174,45 @@ export default function Home() {
   const leftFileInputRef = useRef<HTMLInputElement>(null);
   const rightFileInputRef = useRef<HTMLInputElement>(null);
   const splitFileInputRef = useRef<HTMLInputElement>(null);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
+
+  // テーマ切り替え
+  useEffect(() => {
+    const root = document.documentElement;
+    // 既存のテーマクラスを削除
+    root.className = root.className.replace(/theme-\w+/g, "").replace(/\bdark\b/g, "");
+    if (currentTheme === "dark") {
+      root.classList.add("dark");
+    } else if (currentTheme !== "light") {
+      root.classList.add(`theme-${currentTheme}`);
+    }
+    // ローカルストレージに保存
+    localStorage.setItem("theme", currentTheme);
+  }, [currentTheme]);
+
+  // 初期テーマ読み込み
+  useEffect(() => {
+    const savedTheme = localStorage.getItem("theme") as Theme | null;
+    if (savedTheme && themes.some(t => t.id === savedTheme)) {
+      setCurrentTheme(savedTheme);
+    } else {
+      // 保存されたテーマが無効な場合、デフォルト（ダーク）を設定
+      setCurrentTheme("dark");
+    }
+  }, []);
+
+  // テーマメニューの外側クリックで閉じる
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (themeMenuRef.current && !themeMenuRef.current.contains(event.target as Node)) {
+        setShowThemeMenu(false);
+      }
+    };
+    if (showThemeMenu) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showThemeMenu]);
 
   const handleLeftFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -226,6 +277,46 @@ export default function Home() {
     return combined;
   };
 
+  // キー列でソートする関数
+  const sortByKeyColumns = (data: TableData, keyColumns: string[], options: CompareOptions): TableData => {
+    const keyIndices = keyColumns.map(key => data.headers.indexOf(key)).filter(idx => idx !== -1);
+    if (keyIndices.length === 0) return data;
+
+    const sortedRows = [...data.rows].sort((a, b) => {
+      for (const keyIdx of keyIndices) {
+        let aVal = a[keyIdx] || "";
+        let bVal = b[keyIdx] || "";
+        
+        if (options.trim) {
+          aVal = aVal.trim();
+          bVal = bVal.trim();
+        }
+        if (options.case_insensitive) {
+          aVal = aVal.toLowerCase();
+          bVal = bVal.toLowerCase();
+        }
+        
+        // 数値として比較を試みる
+        const aNum = parseFloat(aVal);
+        const bNum = parseFloat(bVal);
+        if (!isNaN(aNum) && !isNaN(bNum)) {
+          const diff = aNum - bNum;
+          if (diff !== 0) return diff;
+        } else {
+          // 文字列として比較
+          const diff = aVal.localeCompare(bVal, 'ja');
+          if (diff !== 0) return diff;
+        }
+      }
+      return 0;
+    });
+
+    return {
+      ...data,
+      rows: sortedRows,
+    };
+  };
+
   const handleCompare = async () => {
     if (!leftData || !rightData || compareKeys.length === 0) {
       alert("両方のファイルとキー列を選択してください");
@@ -239,21 +330,29 @@ export default function Home() {
     }
 
     try {
+      // キー列でソートする場合、事前にソート
+      let sortedLeftData = leftData;
+      let sortedRightData = rightData;
+      if (sortByKeys) {
+        sortedLeftData = sortByKeyColumns(leftData, compareKeys, compareOptions);
+        sortedRightData = sortByKeyColumns(rightData, compareKeys, compareOptions);
+      }
+      
       // 複数キーの場合、一時的に結合キー列を作成
       const combinedKeyName = compareKeys.join("|");
       
       // 左側のデータに結合キー列を追加
-      const leftKeyIndices = compareKeys.map(key => leftData.headers.indexOf(key));
-      const leftHeadersWithKey = [...leftData.headers, combinedKeyName];
-      const leftRowsWithKey = leftData.rows.map(row => [
+      const leftKeyIndices = compareKeys.map(key => sortedLeftData.headers.indexOf(key));
+      const leftHeadersWithKey = [...sortedLeftData.headers, combinedKeyName];
+      const leftRowsWithKey = sortedLeftData.rows.map(row => [
         ...row,
         combineKeys(row, leftKeyIndices, compareOptions)
       ]);
 
       // 右側のデータに結合キー列を追加
-      const rightKeyIndices = compareKeys.map(key => rightData.headers.indexOf(key));
-      const rightHeadersWithKey = [...rightData.headers, combinedKeyName];
-      const rightRowsWithKey = rightData.rows.map(row => [
+      const rightKeyIndices = compareKeys.map(key => sortedRightData.headers.indexOf(key));
+      const rightHeadersWithKey = [...sortedRightData.headers, combinedKeyName];
+      const rightRowsWithKey = sortedRightData.rows.map(row => [
         ...row,
         combineKeys(row, rightKeyIndices, compareOptions)
       ]);
@@ -663,11 +762,51 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-background p-4 md:p-8">
+    <div className="min-h-screen bg-background p-4 md:p-8 transition-colors duration-300">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold">Custom Merge Excel Web</h1>
-          <p className="text-muted-foreground mt-2">高速Excelファイル統合・分割ツール</p>
+        <div className="mb-8 relative">
+          <div className="flex items-start justify-between">
+            <div>
+              <h1 className="text-3xl font-bold">Custom Merge Excel Web</h1>
+              <p className="text-muted-foreground mt-2">高速Excelファイル統合・分割ツール</p>
+            </div>
+            {/* テーマ切り替えUI */}
+            <div className="relative" ref={themeMenuRef}>
+              <Button
+                variant="outline"
+                size="icon-sm"
+                onClick={() => setShowThemeMenu(!showThemeMenu)}
+                className="transition-all duration-200 hover:scale-105"
+                title="テーマを切り替え"
+              >
+                <Sliders className="h-4 w-4" />
+              </Button>
+              {showThemeMenu && (
+                <div className="absolute right-0 top-10 z-50 w-48 rounded-md border bg-popover shadow-lg p-2 space-y-1 animate-in fade-in-0 zoom-in-95">
+                  <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground border-b mb-1">
+                    テーマ選択
+                  </div>
+                  {themes.map((theme) => (
+                    <button
+                      key={theme.id}
+                      onClick={() => {
+                        setCurrentTheme(theme.id);
+                        setShowThemeMenu(false);
+                      }}
+                      className={`w-full text-left px-3 py-2 rounded-sm text-sm transition-all duration-200 ${
+                        currentTheme === theme.id
+                          ? "bg-accent text-accent-foreground font-medium"
+                          : "hover:bg-accent/50 text-foreground"
+                      }`}
+                    >
+                      <div className="font-medium">{theme.name}</div>
+                      <div className="text-xs text-muted-foreground">{theme.description}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
@@ -770,32 +909,89 @@ export default function Home() {
                 </div>
 
                 {leftData && (
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium">①キー列（複数選択可）</label>
-                    <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
-                      {leftData.headers.map((header, idx) => (
-                        <div key={idx} className="flex items-center space-x-2">
-                          <Checkbox
-                            id={`key-${idx}`}
-                            checked={compareKeys.includes(header)}
-                            onCheckedChange={(checked) => {
-                              if (checked) {
-                                setCompareKeys([...compareKeys, header]);
-                              } else {
-                                setCompareKeys(compareKeys.filter(k => k !== header));
-                              }
-                            }}
-                          />
-                          <label htmlFor={`key-${idx}`} className="text-sm font-medium leading-none cursor-pointer">
-                            {header}
-                          </label>
-                        </div>
-                      ))}
+                  <div className="space-y-3">
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium">①キー列（複数選択可）</label>
+                      <p className="text-xs text-muted-foreground">
+                        複数選択時は、選択順序が重要です。上下矢印で順序を変更できます。
+                      </p>
+                      <div className="max-h-[calc(100vh-500px)] min-h-[200px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                        {leftData.headers.map((header, idx) => (
+                          <div key={idx} className="flex items-center space-x-2">
+                            <Checkbox
+                              id={`key-${idx}`}
+                              checked={compareKeys.includes(header)}
+                              onCheckedChange={(checked) => {
+                                if (checked) {
+                                  setCompareKeys([...compareKeys, header]);
+                                } else {
+                                  setCompareKeys(compareKeys.filter(k => k !== header));
+                                }
+                              }}
+                            />
+                            <label htmlFor={`key-${idx}`} className="text-sm font-medium leading-none cursor-pointer">
+                              {header}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                     {compareKeys.length > 0 && (
-                      <p className="text-xs text-muted-foreground">
-                        選択中: {compareKeys.join(", ")}
-                      </p>
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">キー列の順序（上から順に適用）</label>
+                        <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                          {compareKeys.map((key, idx) => (
+                            <div key={idx} className="flex items-center justify-between p-2 rounded-md bg-muted/50">
+                              <div className="flex items-center space-x-2">
+                                <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
+                                <span className="text-sm font-medium">{key}</span>
+                              </div>
+                              <div className="flex items-center space-x-1">
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={() => {
+                                    if (idx > 0) {
+                                      const newKeys = [...compareKeys];
+                                      [newKeys[idx - 1], newKeys[idx]] = [newKeys[idx], newKeys[idx - 1]];
+                                      setCompareKeys(newKeys);
+                                    }
+                                  }}
+                                  disabled={idx === 0}
+                                  className="h-6 w-6"
+                                >
+                                  <ChevronUp className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={() => {
+                                    if (idx < compareKeys.length - 1) {
+                                      const newKeys = [...compareKeys];
+                                      [newKeys[idx], newKeys[idx + 1]] = [newKeys[idx + 1], newKeys[idx]];
+                                      setCompareKeys(newKeys);
+                                    }
+                                  }}
+                                  disabled={idx === compareKeys.length - 1}
+                                  className="h-6 w-6"
+                                >
+                                  <ChevronDown className="h-3 w-3" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="icon-sm"
+                                  onClick={() => {
+                                    setCompareKeys(compareKeys.filter((_, i) => i !== idx));
+                                  }}
+                                  className="h-6 w-6 text-destructive hover:text-destructive"
+                                >
+                                  <X className="h-3 w-3" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 )}
@@ -904,6 +1100,21 @@ export default function Home() {
                       大文字小文字を区別しない
                     </label>
                   </div>
+                  <div className="flex items-center space-x-2">
+                    <Checkbox
+                      id="sort-by-keys"
+                      checked={sortByKeys}
+                      onCheckedChange={(checked) => setSortByKeys(checked === true)}
+                    />
+                    <label htmlFor="sort-by-keys" className="text-sm font-medium leading-none">
+                      比較実行前にキー列でソート（推奨）
+                    </label>
+                  </div>
+                  {sortByKeys && (
+                    <p className="text-xs text-muted-foreground ml-6">
+                      キー列がソートされていない場合、比較前に自動的にソートします。これにより比較処理が高速化され、結果が整理されます。
+                    </p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -932,7 +1143,7 @@ export default function Home() {
                     {/* 列選択セクション */}
                     <div className="space-y-2">
                       <label className="text-sm font-medium">④出力する列を選択（結合キーは必須）</label>
-                      <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                      <div className="max-h-[calc(100vh-500px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
                         {mergedResult.headers.map((header, idx) => {
                           // 結合キー列を検出（既に統合されているので、直接比較）
                           const isKeyColumn = compareKeys.includes(header);
@@ -1113,7 +1324,7 @@ export default function Home() {
                 {splitData && (
                   <div className="space-y-2">
                     <label className="text-sm font-medium">キー列（複数選択可）</label>
-                    <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                    <div className="max-h-[calc(100vh-400px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
                       {splitData.headers.map((header, idx) => (
                         <div key={idx} className="flex items-center space-x-2">
                           <Checkbox
@@ -1157,7 +1368,7 @@ export default function Home() {
                     {/* 列選択セクション */}
                     <div className="space-y-2">
                       <label className="text-sm font-medium">出力する列を選択（結合キーは必須）</label>
-                      <div className="max-h-48 overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                      <div className="max-h-[calc(100vh-500px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
                         {splitResult.parts[0].table.headers.map((header: string, idx: number) => {
                           const isKeyColumn = splitKeys.includes(header);
                           const isChecked = selectedSplitColumns.includes(header);

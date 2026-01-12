@@ -47,6 +47,72 @@
   --ring: 0 0% 83.1%;
 }
 
+.theme-ocean {
+  --background: 195 100% 10%;
+  --foreground: 195 20% 95%;
+  --card: 195 100% 12%;
+  --card-foreground: 195 20% 95%;
+  --popover: 195 100% 12%;
+  --popover-foreground: 195 20% 95%;
+  --primary: 195 80% 50%;
+  --primary-foreground: 195 20% 95%;
+  --secondary: 195 60% 20%;
+  --secondary-foreground: 195 20% 95%;
+  --muted: 195 50% 18%;
+  --muted-foreground: 195 20% 75%;
+  --accent: 195 70% 25%;
+  --accent-foreground: 195 20% 95%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 195 60% 25%;
+  --input: 195 60% 25%;
+  --ring: 195 80% 50%;
+}
+
+.theme-sunset {
+  --background: 20 100% 15%;
+  --foreground: 20 20% 95%;
+  --card: 20 100% 18%;
+  --card-foreground: 20 20% 95%;
+  --popover: 20 100% 18%;
+  --popover-foreground: 20 20% 95%;
+  --primary: 20 90% 55%;
+  --primary-foreground: 20 20% 95%;
+  --secondary: 20 60% 25%;
+  --secondary-foreground: 20 20% 95%;
+  --muted: 20 50% 22%;
+  --muted-foreground: 20 20% 75%;
+  --accent: 20 70% 30%;
+  --accent-foreground: 20 20% 95%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 20 60% 30%;
+  --input: 20 60% 30%;
+  --ring: 20 90% 55%;
+}
+
+.theme-forest {
+  --background: 140 50% 8%;
+  --foreground: 140 20% 95%;
+  --card: 140 50% 10%;
+  --card-foreground: 140 20% 95%;
+  --popover: 140 50% 10%;
+  --popover-foreground: 140 20% 95%;
+  --primary: 140 70% 45%;
+  --primary-foreground: 140 20% 95%;
+  --secondary: 140 50% 18%;
+  --secondary-foreground: 140 20% 95%;
+  --muted: 140 40% 15%;
+  --muted-foreground: 140 20% 75%;
+  --accent: 140 60% 22%;
+  --accent-foreground: 140 20% 95%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 140 50% 22%;
+  --input: 140 50% 22%;
+  --ring: 140 70% 45%;
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -78,4 +144,9 @@ body {
   background: hsl(var(--background));
   color: hsl(var(--foreground));
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Kaku Gothic ProN", "Hiragino Sans", Meiryo, sans-serif;
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
+
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
 }
