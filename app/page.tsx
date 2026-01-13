@@ -9,6 +9,7 @@ import { Upload, FileSpreadsheet, Download, X, ChevronUp, ChevronDown, Sliders }
 import { readExcelFile, writeExcelFile, type TableData } from "@/lib/excel-utils";
 import { loadWasmModule, type CompareOptions, type CompareInput } from "@/lib/wasm-types";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import JSZip from "jszip";
 
 type Theme = "light" | "dark" | "ocean" | "forest";
@@ -76,6 +77,24 @@ export default function Home() {
     case_insensitive: false,
   });
   const [sortByKeys, setSortByKeys] = useState(true); // キー列でソートするかどうか
+  const [excelHeaderColor, setExcelHeaderColor] = useState(true); // ヘッダー行に色を付ける
+  const [excelBorders, setExcelBorders] = useState(true); // 罫線を引く
+  const [excelHeaderColorValue, setExcelHeaderColorValue] = useState("aqua"); // ヘッダー行の色
+  const [excelShowTotal, setExcelShowTotal] = useState(true); // 合計行を表示する
+
+  // Excelヘッダー行のカラーパレット（視認性の良い10種類）
+  const excelHeaderColors = [
+    { id: "aqua", name: "アクア", color: "#B3E5FC", argb: "FFB3E5FC" }, // Accent5 lighter80%
+    { id: "blue", name: "青", color: "#90CAF9", argb: "FF90CAF9" },
+    { id: "green", name: "グリーン", color: "#A5D6A7", argb: "FFA5D6A7" },
+    { id: "orange", name: "オレンジ", color: "#FFCC80", argb: "FFFFCC80" },
+    { id: "purple", name: "パープル", color: "#CE93D8", argb: "FFCE93D8" },
+    { id: "pink", name: "ピンク", color: "#F48FB1", argb: "FFF48FB1" },
+    { id: "yellow", name: "イエロー", color: "#FFF59D", argb: "FFFFF59D" },
+    { id: "teal", name: "ティール", color: "#80CBC4", argb: "FF80CBC4" },
+    { id: "cyan", name: "シアン", color: "#80DEEA", argb: "FF80DEEA" },
+    { id: "lime", name: "ライム", color: "#E6EE9C", argb: "FFE6EE9C" },
+  ];
   const [compareResult, setCompareResult] = useState<any | null>(null);
   const [mergedResult, setMergedResult] = useState<TableData | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
@@ -579,6 +598,18 @@ export default function Home() {
       })
       .filter(idx => idx !== -1);
 
+    // 各金額列で小数点以下があるかチェック
+    const hasDecimalPlaces = amountColumnIndices.map(colIdx => {
+      return filteredMerged.rows.some(row => {
+        const val = row[colIdx] || "";
+        const num = parseFloat(val);
+        if (!isNaN(num)) {
+          return num % 1 !== 0; // 小数点以下があるか
+        }
+        return false;
+      });
+    });
+
     // 合計行を計算
     const totals: (string | number)[] = filteredMerged.headers.map((header, idx) => {
       if (amountColumnIndices.includes(idx)) {
@@ -591,51 +622,80 @@ export default function Home() {
       return idx === 0 ? "合計" : "";
     });
 
-    // Excelファイルを作成（金額列を数値として書き込み）
-    const worksheetData: any[][] = [
-      filteredMerged.headers,
-      ...filteredMerged.rows.map(row => row.map((cell, idx) => {
+    // ExcelJSを使用してExcelファイルを作成
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet("Sheet1");
+
+    // ヘッダー行を追加
+    worksheet.addRow(filteredMerged.headers);
+
+    // データ行を追加
+    filteredMerged.rows.forEach(row => {
+      const rowData = row.map((cell, idx) => {
         if (amountColumnIndices.includes(idx)) {
           const num = parseFloat(cell || "0");
           return isNaN(num) ? cell : num;
         }
         return cell;
-      })),
-      totals,
-    ];
-
-    const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-
-    // 金額列を数値形式とカンマ区切りに設定
-    const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
-    amountColumnIndices.forEach(colIdx => {
-      // データ行（ヘッダー行と合計行を除く）
-      for (let row = 1; row < range.e.r; row++) {
-        const cellAddress = XLSX.utils.encode_cell({ r: row, c: colIdx });
-        if (worksheet[cellAddress]) {
-          const cell = worksheet[cellAddress];
-          if (typeof cell.v === 'number') {
-            // 数値形式を設定（カンマ区切り）
-            cell.z = '#,##0';
-            cell.t = 'n'; // 数値型
-          }
-        }
-      }
-      // 合計行
-      const totalRowIdx = range.e.r;
-      const cellAddress = XLSX.utils.encode_cell({ r: totalRowIdx, c: colIdx });
-      if (worksheet[cellAddress]) {
-        const cell = worksheet[cellAddress];
-        if (typeof cell.v === 'number') {
-          cell.z = '#,##0';
-          cell.t = 'n';
-        }
-      }
+      });
+      worksheet.addRow(rowData);
     });
 
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-    XLSX.writeFile(workbook, "merged_result.xlsx");
+    // 合計行を追加（オプション）
+    if (excelShowTotal) {
+      worksheet.addRow(totals);
+    }
+
+    // スタイルを適用
+    const selectedColor = excelHeaderColors.find(c => c.id === excelHeaderColorValue) || excelHeaderColors[0];
+    const totalRowNumber = excelShowTotal ? filteredMerged.rows.length + 2 : filteredMerged.rows.length + 1;
+    worksheet.eachRow((row, rowNumber) => {
+      row.eachCell((cell, colNumber) => {
+        // ヘッダー行（1行目）に色を付ける
+        if (rowNumber === 1 && excelHeaderColor) {
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: selectedColor.argb }
+          };
+          cell.font = {
+            bold: true,
+            color: { argb: 'FF000000' }
+          };
+        }
+
+        // 罫線を引く
+        if (excelBorders) {
+          cell.border = {
+            top: { style: 'thin', color: { argb: 'FF000000' } },
+            bottom: { style: 'thin', color: { argb: 'FF000000' } },
+            left: { style: 'thin', color: { argb: 'FF000000' } },
+            right: { style: 'thin', color: { argb: 'FF000000' } }
+          };
+        }
+
+        // 金額列の数値形式を設定（小数点以下がある場合は表示）
+        if (amountColumnIndices.includes(colNumber - 1)) {
+          const amountIdx = amountColumnIndices.indexOf(colNumber - 1);
+          const hasDecimal = hasDecimalPlaces[amountIdx];
+          
+          if (rowNumber > 1 && rowNumber <= totalRowNumber) {
+            // データ行と合計行
+            cell.numFmt = hasDecimal ? '#,##0.00' : '#,##0';
+          }
+        }
+      });
+    });
+
+    // ファイルをダウンロード
+    const buffer = await workbook.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "merged_result.xlsx";
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadSplit = async () => {
@@ -678,44 +738,44 @@ export default function Home() {
         };
       }
       
-      // 数値列を数値として書き込み
-      const worksheetData: any[][] = [
-        filteredData.headers,
-        ...filteredData.rows.map(row => row.map((cell, cellIdx) => {
+      // ExcelJSを使用してExcelファイルを作成
+      const workbook = new ExcelJS.Workbook();
+      const worksheet = workbook.addWorksheet("Sheet1");
+
+      // ヘッダー行を追加
+      worksheet.addRow(filteredData.headers);
+
+      // データ行を追加
+      filteredData.rows.forEach(row => {
+        const rowData = row.map((cell, cellIdx) => {
           const header = filteredData.headers[cellIdx];
           if (splitNumericColumns.includes(header)) {
             const num = parseFloat(cell || "0");
             return isNaN(num) ? cell : num;
           }
           return cell;
-        })),
-      ];
-      
-      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-      
-      // 数値列を数値形式とカンマ区切りに設定
-      const range = XLSX.utils.decode_range(worksheet['!ref'] || 'A1');
+        });
+        worksheet.addRow(rowData);
+      });
+
+      // 合計行を追加（数値列のみ）
       const numericColumnIndices = filteredData.headers
         .map((header, idx) => splitNumericColumns.includes(header) ? idx : -1)
         .filter(idx => idx !== -1);
-      
-      numericColumnIndices.forEach(colIdx => {
-        // データ行（ヘッダー行を除く）
-        for (let row = 1; row <= range.e.r; row++) {
-          const cellAddress = XLSX.utils.encode_cell({ r: row, c: colIdx });
-          if (worksheet[cellAddress]) {
-            const cell = worksheet[cellAddress];
-            if (typeof cell.v === 'number') {
-              // 数値形式を設定（カンマ区切り）
-              cell.z = '#,##0';
-              cell.t = 'n'; // 数値型
-            }
+
+      // 各数値列で小数点以下があるかチェック
+      const hasDecimalPlaces = numericColumnIndices.map(colIdx => {
+        return filteredData.rows.some(row => {
+          const val = row[colIdx] || "";
+          const num = parseFloat(val);
+          if (!isNaN(num)) {
+            return num % 1 !== 0; // 小数点以下があるか
           }
-        }
+          return false;
+        });
       });
-      
-      // 合計行を追加（数値列のみ）
-      if (numericColumnIndices.length > 0) {
+
+      if (numericColumnIndices.length > 0 && excelShowTotal) {
         const totals: (string | number)[] = filteredData.headers.map((header, idx) => {
           if (splitNumericColumns.includes(header)) {
             const sum = filteredData.rows.reduce((acc, row) => {
@@ -726,29 +786,54 @@ export default function Home() {
           }
           return idx === 0 ? "合計" : "";
         });
-        
-        const totalRowIdx = range.e.r + 1;
-        totals.forEach((value, colIdx) => {
-          const cellAddress = XLSX.utils.encode_cell({ r: totalRowIdx, c: colIdx });
-          if (!worksheet[cellAddress]) {
-            worksheet[cellAddress] = {};
-          }
-          const cell = worksheet[cellAddress];
-          cell.v = value;
-          cell.t = typeof value === 'number' ? 'n' : 's';
-          if (typeof value === 'number') {
-            cell.z = '#,##0';
-          }
-        });
-        worksheet['!ref'] = XLSX.utils.encode_range({
-          s: { r: 0, c: 0 },
-          e: { r: totalRowIdx, c: range.e.c }
-        });
+        worksheet.addRow(totals);
       }
-      
-      const workbook = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
-      const excelBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+
+      // スタイルを適用
+      const selectedColor = excelHeaderColors.find(c => c.id === excelHeaderColorValue) || excelHeaderColors[0];
+      const totalRowNumber = excelShowTotal && numericColumnIndices.length > 0 
+        ? filteredData.rows.length + 2 
+        : filteredData.rows.length + 1;
+      worksheet.eachRow((row, rowNumber) => {
+        row.eachCell((cell, colNumber) => {
+          // ヘッダー行（1行目）に色を付ける
+          if (rowNumber === 1 && excelHeaderColor) {
+            cell.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: selectedColor.argb }
+            };
+            cell.font = {
+              bold: true,
+              color: { argb: 'FF000000' }
+            };
+          }
+
+          // 罫線を引く
+          if (excelBorders) {
+            cell.border = {
+              top: { style: 'thin', color: { argb: 'FF000000' } },
+              bottom: { style: 'thin', color: { argb: 'FF000000' } },
+              left: { style: 'thin', color: { argb: 'FF000000' } },
+              right: { style: 'thin', color: { argb: 'FF000000' } }
+            };
+          }
+
+          // 数値列の数値形式を設定（小数点以下がある場合は表示）
+          if (numericColumnIndices.includes(colNumber - 1)) {
+            const numericIdx = numericColumnIndices.indexOf(colNumber - 1);
+            const hasDecimal = hasDecimalPlaces[numericIdx];
+            
+            if (rowNumber > 1 && rowNumber <= totalRowNumber) {
+              // データ行と合計行
+              cell.numFmt = hasDecimal ? '#,##0.00' : '#,##0';
+            }
+          }
+        });
+      });
+
+      // バッファに書き込み
+      const excelBuffer = await workbook.xlsx.writeBuffer();
       zip.file(`${safeFileName}.xlsx`, excelBuffer);
     }
 
@@ -1256,6 +1341,64 @@ export default function Home() {
                       <PreviewTable data={sortedMergedResult || filterColumns(mergedResult, selectedColumns)} />
                     </div>
                     
+                    {/* Excel出力オプション */}
+                    <div className="space-y-3 p-3 rounded-md border bg-muted/50">
+                      <label className="text-sm font-medium">Excel出力オプション</label>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="excel-header-color"
+                          checked={excelHeaderColor}
+                          onCheckedChange={(checked) => setExcelHeaderColor(checked === true)}
+                        />
+                        <label htmlFor="excel-header-color" className="text-sm font-medium leading-none">
+                          1行目（ヘッダー）に色を付ける
+                        </label>
+                      </div>
+                      {excelHeaderColor && (
+                        <div className="space-y-2">
+                          <label className="text-xs text-muted-foreground">ヘッダー行の色</label>
+                          <div className="flex flex-wrap gap-2">
+                            {excelHeaderColors.map((colorOption) => (
+                              <button
+                                key={colorOption.id}
+                                onClick={() => setExcelHeaderColorValue(colorOption.id)}
+                                className={`w-10 h-10 rounded-md border-2 transition-all ${
+                                  excelHeaderColorValue === colorOption.id
+                                    ? "border-orange-500 scale-110 shadow-md"
+                                    : "border-gray-300 hover:border-gray-400"
+                                }`}
+                                style={{ backgroundColor: colorOption.color }}
+                                title={colorOption.name}
+                              />
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            選択中: {excelHeaderColors.find(c => c.id === excelHeaderColorValue)?.name || "アクア"}
+                          </p>
+                        </div>
+                      )}
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="excel-borders"
+                          checked={excelBorders}
+                          onCheckedChange={(checked) => setExcelBorders(checked === true)}
+                        />
+                        <label htmlFor="excel-borders" className="text-sm font-medium leading-none">
+                          罫線を引く
+                        </label>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="excel-show-total"
+                          checked={excelShowTotal}
+                          onCheckedChange={(checked) => setExcelShowTotal(checked === true)}
+                        />
+                        <label htmlFor="excel-show-total" className="text-sm font-medium leading-none">
+                          合計行を表示（桁区切り適用）
+                        </label>
+                      </div>
+                    </div>
+                    
                     {/* ダウンロードボタン */}
                     <div className="flex justify-end">
                       <Button variant="outline" size="sm" onClick={handleDownloadCompare}>
@@ -1578,6 +1721,64 @@ export default function Home() {
                         </div>
                       </div>
                     )}
+                    
+                    {/* Excel出力オプション */}
+                    <div className="space-y-3 p-3 rounded-md border bg-muted/50">
+                      <label className="text-sm font-medium">Excel出力オプション</label>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="excel-header-color-split"
+                          checked={excelHeaderColor}
+                          onCheckedChange={(checked) => setExcelHeaderColor(checked === true)}
+                        />
+                        <label htmlFor="excel-header-color-split" className="text-sm font-medium leading-none">
+                          1行目（ヘッダー）に色を付ける
+                        </label>
+                      </div>
+                      {excelHeaderColor && (
+                        <div className="space-y-2">
+                          <label className="text-xs text-muted-foreground">ヘッダー行の色</label>
+                          <div className="flex flex-wrap gap-2">
+                            {excelHeaderColors.map((colorOption) => (
+                              <button
+                                key={colorOption.id}
+                                onClick={() => setExcelHeaderColorValue(colorOption.id)}
+                                className={`w-10 h-10 rounded-md border-2 transition-all ${
+                                  excelHeaderColorValue === colorOption.id
+                                    ? "border-orange-500 scale-110 shadow-md"
+                                    : "border-gray-300 hover:border-gray-400"
+                                }`}
+                                style={{ backgroundColor: colorOption.color }}
+                                title={colorOption.name}
+                              />
+                            ))}
+                          </div>
+                          <p className="text-xs text-muted-foreground">
+                            選択中: {excelHeaderColors.find(c => c.id === excelHeaderColorValue)?.name || "アクア"}
+                          </p>
+                        </div>
+                      )}
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="excel-borders-split"
+                          checked={excelBorders}
+                          onCheckedChange={(checked) => setExcelBorders(checked === true)}
+                        />
+                        <label htmlFor="excel-borders-split" className="text-sm font-medium leading-none">
+                          罫線を引く
+                        </label>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <Checkbox
+                          id="excel-show-total-split"
+                          checked={excelShowTotal}
+                          onCheckedChange={(checked) => setExcelShowTotal(checked === true)}
+                        />
+                        <label htmlFor="excel-show-total-split" className="text-sm font-medium leading-none">
+                          合計行を表示（桁区切り適用）
+                        </label>
+                      </div>
+                    </div>
                     
                     {/* ダウンロードボタン */}
                     <div className="flex justify-end">
