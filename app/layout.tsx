@@ -37,10 +37,34 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className="dark" suppressHydrationWarning>
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  const savedTheme = localStorage.getItem('theme');
+                  const root = document.documentElement;
+                  root.className = root.className.replace(/theme-\\w+/g, '').replace(/\\bdark\\b/g, '');
+                  if (savedTheme === 'dark') {
+                    root.classList.add('dark');
+                  } else if (savedTheme === 'ocean') {
+                    root.classList.add('theme-ocean');
+                  } else if (savedTheme === 'forest') {
+                    root.classList.add('theme-forest');
+                  } else {
+                    root.classList.add('dark');
+                  }
+                } catch (e) {
+                  document.documentElement.classList.add('dark');
+                }
+              })();
+            `,
+          }}
+        />
         <LayoutClient />
         {children}
       </body>
