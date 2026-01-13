@@ -12,11 +12,11 @@ import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import JSZip from "jszip";
 
-type Theme = "light" | "dark" | "ocean" | "forest";
+type Theme = "dark" | "light" | "ocean" | "forest";
 
 const themes: { id: Theme; name: string; description: string }[] = [
-  { id: "light", name: "ライト", description: "白背景・黒文字" },
   { id: "dark", name: "ダーク", description: "黒背景・白文字" },
+  { id: "light", name: "ライト", description: "白背景・黒文字" },
   { id: "ocean", name: "オーシャン", description: "青緑系" },
   { id: "forest", name: "フォレスト", description: "緑系" },
 ];
