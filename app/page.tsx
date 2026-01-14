@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useMemo, useEffect } from "react";
+import { useState, useRef, useMemo, useEffect, useCallback } from "react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
@@ -9,7 +9,6 @@ import { Upload, FileSpreadsheet, Download, X, ChevronUp, ChevronDown, Sliders }
 import { readExcelFile, writeExcelFile, type TableData } from "@/lib/excel-utils";
 import { loadWasmModule, type CompareOptions, type CompareInput } from "@/lib/wasm-types";
 import * as XLSX from "xlsx";
-import ExcelJS from "exceljs";
 import JSZip from "jszip";
 
 type Theme = "dark" | "light" | "ocean" | "forest";
@@ -22,10 +21,23 @@ const themes: { id: Theme; name: string; description: string }[] = [
 ];
 
 // プレビューテーブルコンポーネント
-function PreviewTable({ data }: { data: TableData }) {
+function PreviewTable({ data, numericColumns = [] }: { data: TableData; numericColumns?: string[] }) {
   if (!data || data.rows.length === 0) {
     return <div className="text-sm text-muted-foreground">データがありません</div>;
   }
+
+  // 数値をカンマ区切りでフォーマット
+  const formatNumber = (value: string, header: string): string => {
+    if (numericColumns.includes(header)) {
+      const num = parseFloat(value);
+      if (!isNaN(num)) {
+        // 小数点以下があるかチェック
+        const hasDecimal = num % 1 !== 0;
+        return hasDecimal ? num.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : num.toLocaleString('ja-JP');
+      }
+    }
+    return value;
+  };
 
   return (
     <div className="max-h-96 overflow-auto rounded-md border">
@@ -42,11 +54,15 @@ function PreviewTable({ data }: { data: TableData }) {
         <tbody>
           {data.rows.slice(0, 100).map((row, rowIdx) => (
             <tr key={rowIdx} className="border-b hover:bg-muted/50">
-              {row.map((cell, cellIdx) => (
-                <td key={cellIdx} className="px-4 py-2 max-w-xs truncate" title={cell}>
-                  {cell}
-                </td>
-              ))}
+              {row.map((cell, cellIdx) => {
+                const header = data.headers[cellIdx];
+                const formattedValue = formatNumber(cell, header);
+                return (
+                  <td key={cellIdx} className="px-4 py-2 max-w-xs truncate" title={cell}>
+                    {formattedValue}
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
@@ -98,13 +114,20 @@ export default function Home() {
   const [compareResult, setCompareResult] = useState<any | null>(null);
   const [mergedResult, setMergedResult] = useState<TableData | null>(null);
   const [selectedColumns, setSelectedColumns] = useState<string[]>([]);
+  const [columnOrder, setColumnOrder] = useState<string[]>([]); // 列の表示順序
   const [sortColumns, setSortColumns] = useState<{ column: string; direction: "asc" | "desc" }[]>([]);
+  const [draggedColumn, setDraggedColumn] = useState<string | null>(null); // ドラッグ中の列
   
-  // 選択された列のみを含むテーブルデータを生成
-  const filterColumns = (data: TableData, columns: string[]): TableData => {
-    const columnIndices = columns.map(col => data.headers.indexOf(col)).filter(idx => idx !== -1);
+  // 選択された列のみを含むテーブルデータを生成（順序を考慮）
+  const filterColumns = (data: TableData, columns: string[], order?: string[]): TableData => {
+    // 順序が指定されている場合はそれを使用、ない場合はcolumnsの順序を使用
+    const orderedColumns = order && order.length > 0 
+      ? order.filter(col => columns.includes(col)).concat(columns.filter(col => !order.includes(col)))
+      : columns;
+    
+    const columnIndices = orderedColumns.map(col => data.headers.indexOf(col)).filter(idx => idx !== -1);
     return {
-      headers: columns.filter(col => data.headers.includes(col)),
+      headers: orderedColumns.filter(col => data.headers.includes(col)),
       rows: data.rows.map(row => columnIndices.map(idx => row[idx] || "")),
     };
   };
@@ -113,8 +136,8 @@ export default function Home() {
   const sortedMergedResult = useMemo(() => {
     if (!mergedResult) return null;
     
-    // 選択された列でフィルタリング
-    const filteredData = filterColumns(mergedResult, selectedColumns);
+    // 選択された列でフィルタリング（順序を考慮）
+    const filteredData = filterColumns(mergedResult, selectedColumns, columnOrder);
     
     if (sortColumns.length === 0) return filteredData;
     
@@ -143,7 +166,7 @@ export default function Home() {
       ...filteredData,
       rows: sortedRows,
     };
-  }, [mergedResult, selectedColumns, sortColumns]);
+  }, [mergedResult, selectedColumns, columnOrder, sortColumns]);
 
   // Split state
   const [splitFile, setSplitFile] = useState<File | null>(null);
@@ -151,16 +174,18 @@ export default function Home() {
   const [splitKeys, setSplitKeys] = useState<string[]>([]);
   const [splitResult, setSplitResult] = useState<any | null>(null);
   const [selectedSplitColumns, setSelectedSplitColumns] = useState<string[]>([]);
+  const [splitColumnOrder, setSplitColumnOrder] = useState<string[]>([]); // 列の表示順序
   const [splitNumericColumns, setSplitNumericColumns] = useState<string[]>([]);
   const [splitSortColumns, setSplitSortColumns] = useState<{ column: string; direction: "asc" | "desc" }[]>([]);
+  const [draggedSplitColumn, setDraggedSplitColumn] = useState<string | null>(null); // ドラッグ中の列（分割モード）
   
   // 分割モードのソート処理（Hooksの順序を保つため、条件分岐の外に配置）
   const sortedSplitPreviewData = useMemo(() => {
     if (!splitResult || splitResult.parts.length === 0) return null;
     
-    // 最初のファイルのデータをソート（選択された列でフィルタリング済み）
+    // 最初のファイルのデータをソート（選択された列でフィルタリング済み、順序を考慮）
     const firstPart = splitResult.parts[0];
-    const filteredData = filterColumns(firstPart.table, selectedSplitColumns);
+    const filteredData = filterColumns(firstPart.table, selectedSplitColumns, splitColumnOrder);
     
     if (splitSortColumns.length === 0) return filteredData;
     
@@ -236,11 +261,11 @@ export default function Home() {
   const handleLeftFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    
     setLeftFile(file);
-    setLeftData(null); // リセット
+    setLeftData(null);
     try {
       const data = await readExcelFile(file);
-      console.log('左側ファイル読み込み成功:', data.headers.length, '列', data.rows.length, '行');
       setLeftData(data);
       if (compareKeys.length === 0 && data.headers.length > 0) {
         setCompareKeys([data.headers[0]]);
@@ -249,28 +274,35 @@ export default function Home() {
       console.error('左側ファイル読み込みエラー:', error);
       alert(`ファイルの読み込みに失敗しました: ${error}`);
       setLeftFile(null);
+      setLeftData(null);
     }
+    // 同じファイルを再度選択できるようにする
+    e.target.value = '';
   };
 
   const handleRightFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    
     setRightFile(file);
-    setRightData(null); // リセット
+    setRightData(null);
     try {
       const data = await readExcelFile(file);
-      console.log('右側ファイル読み込み成功:', data.headers.length, '列', data.rows.length, '行');
       setRightData(data);
     } catch (error) {
       console.error('右側ファイル読み込みエラー:', error);
       alert(`ファイルの読み込みに失敗しました: ${error}`);
       setRightFile(null);
+      setRightData(null);
     }
+    // 同じファイルを再度選択できるようにする
+    e.target.value = '';
   };
 
   const handleSplitFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    
     setSplitFile(file);
     try {
       const data = await readExcelFile(file);
@@ -279,9 +311,15 @@ export default function Home() {
         setSplitKeys([data.headers[0]]);
       }
     } catch (error) {
+      console.error('分割ファイル読み込みエラー:', error);
       alert(`ファイルの読み込みに失敗しました: ${error}`);
+      setSplitFile(null);
+      setSplitData(null);
     }
+    // 同じファイルを再度選択できるようにする
+    e.target.value = '';
   };
+
 
   // 複数キーを結合する関数
   const combineKeys = (row: string[], keyIndices: number[], options: CompareOptions): string => {
@@ -506,6 +544,7 @@ export default function Home() {
       // デフォルトで必須列（結合キー列）のみを選択
       const requiredColumns = finalHeaders.filter(header => compareKeys.includes(header));
       setSelectedColumns(requiredColumns);
+      setColumnOrder(requiredColumns); // 初期順序を設定
       
       setCompareResult(result);
     } catch (error) {
@@ -561,6 +600,7 @@ export default function Home() {
         const allHeaders = result.parts[0].table.headers;
         const requiredColumns = allHeaders.filter((header: string) => splitKeys.includes(header));
         setSelectedSplitColumns(requiredColumns);
+        setSplitColumnOrder(requiredColumns); // 初期順序を設定
       }
       
       setSplitResult(result);
@@ -573,7 +613,7 @@ export default function Home() {
     if (!compareResult || !mergedResult) return;
 
     // ソート済みの結果を使用（sortedMergedResultは既に選択列でフィルタリング済み、ソート済み）
-    const filteredMerged = sortedMergedResult || filterColumns(mergedResult, selectedColumns);
+    const filteredMerged = sortedMergedResult || filterColumns(mergedResult, selectedColumns, columnOrder);
 
     // 金額列（比較列、差額列）を識別
     const amountColumnHeaders = new Set<string>();
@@ -622,7 +662,30 @@ export default function Home() {
       return idx === 0 ? "合計" : "";
     });
 
-    // ExcelJSを使用してExcelファイルを作成
+    // ExcelJSを使用してExcelファイルを作成（動的インポート）
+    let ExcelJS: any;
+    try {
+      ExcelJS = (await import("exceljs")).default;
+    } catch (error) {
+      console.error("Failed to load exceljs, using fallback:", error);
+      // フォールバック: 標準のXLSXを使用（スタイルなし）
+      const worksheetData: any[][] = [
+        filteredMerged.headers,
+        ...filteredMerged.rows.map(row => row.map((cell, idx) => {
+          if (amountColumnIndices.includes(idx)) {
+            const num = parseFloat(cell || "0");
+            return isNaN(num) ? cell : num;
+          }
+          return cell;
+        })),
+        ...(excelShowTotal ? [totals] : []),
+      ];
+      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+      XLSX.writeFile(workbook, "merged_result.xlsx");
+      return;
+    }
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet("Sheet1");
 
@@ -649,8 +712,8 @@ export default function Home() {
     // スタイルを適用
     const selectedColor = excelHeaderColors.find(c => c.id === excelHeaderColorValue) || excelHeaderColors[0];
     const totalRowNumber = excelShowTotal ? filteredMerged.rows.length + 2 : filteredMerged.rows.length + 1;
-    worksheet.eachRow((row, rowNumber) => {
-      row.eachCell((cell, colNumber) => {
+    worksheet.eachRow((row: any, rowNumber: number) => {
+      row.eachCell((cell: any, colNumber: number) => {
         // ヘッダー行（1行目）に色を付ける
         if (rowNumber === 1 && excelHeaderColor) {
           cell.fill = {
@@ -708,8 +771,8 @@ export default function Home() {
         .replace(/[<>:"/\\|?*]/g, "_")
         .replace(/\s+/g, "_");
       
-      // 選択された列のみを含むデータを生成
-      let filteredData = filterColumns(part.table, selectedSplitColumns);
+      // 選択された列のみを含むデータを生成（順序を考慮）
+      let filteredData = filterColumns(part.table, selectedSplitColumns, splitColumnOrder);
       
       // ソート処理（3列まで順位指定）
       if (splitSortColumns.length > 0) {
@@ -738,7 +801,47 @@ export default function Home() {
         };
       }
       
-      // ExcelJSを使用してExcelファイルを作成
+      // ExcelJSを使用してExcelファイルを作成（動的インポート）
+      let ExcelJS: any;
+      try {
+        ExcelJS = (await import("exceljs")).default;
+      } catch (error) {
+        console.error("Failed to load exceljs, using fallback:", error);
+        // フォールバック: 標準のXLSXを使用（スタイルなし）
+        const numericColumnIndices = filteredData.headers
+          .map((header, idx) => splitNumericColumns.includes(header) ? idx : -1)
+          .filter(idx => idx !== -1);
+        const worksheetData: any[][] = [
+          filteredData.headers,
+          ...filteredData.rows.map(row => row.map((cell, cellIdx) => {
+            const header = filteredData.headers[cellIdx];
+            if (splitNumericColumns.includes(header)) {
+              const num = parseFloat(cell || "0");
+              return isNaN(num) ? cell : num;
+            }
+            return cell;
+          })),
+        ];
+        if (excelShowTotal && numericColumnIndices.length > 0) {
+          const totals: (string | number)[] = filteredData.headers.map((header, idx) => {
+            if (splitNumericColumns.includes(header)) {
+              const sum = filteredData.rows.reduce((acc, row) => {
+                const val = parseFloat(row[idx] || "0") || 0;
+                return acc + val;
+              }, 0);
+              return sum;
+            }
+            return idx === 0 ? "合計" : "";
+          });
+          worksheetData.push(totals);
+        }
+        const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Sheet1");
+        const excelBuffer = XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+        zip.file(`${safeFileName}.xlsx`, excelBuffer);
+        continue;
+      }
       const workbook = new ExcelJS.Workbook();
       const worksheet = workbook.addWorksheet("Sheet1");
 
@@ -794,8 +897,8 @@ export default function Home() {
       const totalRowNumber = excelShowTotal && numericColumnIndices.length > 0 
         ? filteredData.rows.length + 2 
         : filteredData.rows.length + 1;
-      worksheet.eachRow((row, rowNumber) => {
-        row.eachCell((cell, colNumber) => {
+      worksheet.eachRow((row: any, rowNumber: number) => {
+        row.eachCell((cell: any, colNumber: number) => {
           // ヘッダー行（1行目）に色を付ける
           if (rowNumber === 1 && excelHeaderColor) {
             cell.fill = {
@@ -914,6 +1017,7 @@ export default function Home() {
                     <label className="text-sm font-medium">左側のファイル</label>
                     <div className="flex items-center gap-2">
                       <input
+                        id="left-file-input"
                         ref={leftFileInputRef}
                         type="file"
                         accept=".xlsx,.xls"
@@ -922,7 +1026,13 @@ export default function Home() {
                       />
                       <Button
                         variant="outline"
-                        onClick={() => leftFileInputRef.current?.click()}
+                        type="button"
+                        onClick={() => {
+                          const input = document.getElementById('left-file-input') as HTMLInputElement;
+                          if (input) {
+                            input.click();
+                          }
+                        }}
                       >
                         <Upload className="mr-2 h-4 w-4" />
                         ファイルを選択
@@ -955,6 +1065,7 @@ export default function Home() {
                     <label className="text-sm font-medium">右側のファイル</label>
                     <div className="flex items-center gap-2">
                       <input
+                        id="right-file-input"
                         ref={rightFileInputRef}
                         type="file"
                         accept=".xlsx,.xls"
@@ -963,7 +1074,13 @@ export default function Home() {
                       />
                       <Button
                         variant="outline"
-                        onClick={() => rightFileInputRef.current?.click()}
+                        type="button"
+                        onClick={() => {
+                          const input = document.getElementById('right-file-input') as HTMLInputElement;
+                          if (input) {
+                            input.click();
+                          }
+                        }}
                       >
                         <Upload className="mr-2 h-4 w-4" />
                         ファイルを選択
@@ -1226,42 +1343,139 @@ export default function Home() {
                     </div>
                     
                     {/* 列選択セクション */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">④出力する列を選択（結合キーは必須）</label>
-                      <div className="max-h-[calc(100vh-500px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
-                        {mergedResult.headers.map((header, idx) => {
-                          // 結合キー列を検出（既に統合されているので、直接比較）
-                          const isKeyColumn = compareKeys.includes(header);
-                          const isChecked = selectedColumns.includes(header);
-                          const isDisabled = isKeyColumn;
-                          
-                          return (
-                            <div key={idx} className="flex items-center space-x-2">
-                              <Checkbox
-                                id={`col-${idx}`}
-                                checked={isChecked || isDisabled}
-                                disabled={isDisabled}
-                                onCheckedChange={(checked) => {
-                                  if (!isDisabled) {
-                                    if (checked) {
-                                      setSelectedColumns([...selectedColumns, header]);
-                                    } else {
-                                      setSelectedColumns(selectedColumns.filter(c => c !== header));
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">④出力する列を選択（結合キーは必須）</label>
+                        <div className="max-h-[calc(100vh-500px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                          {mergedResult.headers.map((header, idx) => {
+                            // 結合キー列を検出（既に統合されているので、直接比較）
+                            const isKeyColumn = compareKeys.includes(header);
+                            const isChecked = selectedColumns.includes(header);
+                            const isDisabled = isKeyColumn;
+                            
+                            return (
+                              <div key={idx} className="flex items-center space-x-2">
+                                <Checkbox
+                                  id={`col-${idx}`}
+                                  checked={isChecked || isDisabled}
+                                  disabled={isDisabled}
+                                  onCheckedChange={(checked) => {
+                                    if (!isDisabled) {
+                                      if (checked) {
+                                        const newColumns = [...selectedColumns, header];
+                                        setSelectedColumns(newColumns);
+                                        setColumnOrder(newColumns);
+                                      } else {
+                                        const newColumns = selectedColumns.filter(c => c !== header);
+                                        setSelectedColumns(newColumns);
+                                        setColumnOrder(columnOrder.filter(c => c !== header));
+                                      }
                                     }
-                                  }
-                                }}
-                              />
-                              <label 
-                                htmlFor={`col-${idx}`} 
-                                className={`text-sm font-medium leading-none cursor-pointer ${isDisabled ? 'text-muted-foreground' : ''}`}
-                              >
-                                {header}
-                                {isKeyColumn && <span className="text-xs text-muted-foreground ml-1">（必須）</span>}
-                              </label>
-                            </div>
-                          );
-                        })}
+                                  }}
+                                />
+                                <label 
+                                  htmlFor={`col-${idx}`} 
+                                  className={`text-sm font-medium leading-none cursor-pointer ${isDisabled ? 'text-muted-foreground' : ''}`}
+                                >
+                                  {header}
+                                  {isKeyColumn && <span className="text-xs text-muted-foreground ml-1">（必須）</span>}
+                                </label>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
+                      {selectedColumns.length > 0 && (
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">列の表示順序</label>
+                          <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                            {(columnOrder.length > 0 && columnOrder.length === selectedColumns.length 
+                              ? columnOrder.filter(col => selectedColumns.includes(col))
+                              : selectedColumns
+                            ).map((col, idx) => {
+                              // columnOrderが空または不一致の場合は、selectedColumnsの順序を使用
+                              const currentOrder = columnOrder.length > 0 && columnOrder.length === selectedColumns.length
+                                ? columnOrder.filter(c => selectedColumns.includes(c))
+                                : selectedColumns;
+                              
+                              const isDragging = draggedColumn === col;
+                              
+                              return (
+                                <div
+                                  key={col}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    setDraggedColumn(col);
+                                    e.dataTransfer.effectAllowed = "move";
+                                  }}
+                                  onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = "move";
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    if (draggedColumn && draggedColumn !== col) {
+                                      const newOrder = [...currentOrder];
+                                      const draggedIdx = newOrder.indexOf(draggedColumn);
+                                      const targetIdx = newOrder.indexOf(col);
+                                      newOrder.splice(draggedIdx, 1);
+                                      newOrder.splice(targetIdx, 0, draggedColumn);
+                                      setColumnOrder(newOrder);
+                                    }
+                                    setDraggedColumn(null);
+                                  }}
+                                  onDragEnd={() => {
+                                    setDraggedColumn(null);
+                                  }}
+                                  className={`flex items-center justify-between p-2 rounded-md bg-muted/50 cursor-move transition-all ${
+                                    isDragging ? "opacity-50" : "hover:bg-muted"
+                                  }`}
+                                >
+                                  <div className="flex items-center space-x-2 flex-1">
+                                    <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
+                                    <span className="text-sm font-medium">{col}</span>
+                                    <span className="text-xs text-muted-foreground ml-2">（ドラッグで移動）</span>
+                                  </div>
+                                  <div className="flex items-center space-x-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (idx > 0) {
+                                          const newOrder = [...currentOrder];
+                                          [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
+                                          setColumnOrder(newOrder);
+                                        }
+                                      }}
+                                      disabled={idx === 0}
+                                      className="h-6 w-6"
+                                    >
+                                      <ChevronUp className="h-3 w-3" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (idx < currentOrder.length - 1) {
+                                          const newOrder = [...currentOrder];
+                                          [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
+                                          setColumnOrder(newOrder);
+                                        }
+                                      }}
+                                      disabled={idx === currentOrder.length - 1}
+                                      className="h-6 w-6"
+                                    >
+                                      <ChevronDown className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
                     </div>
                     
                     {/* マージ結果とソートセクション */}
@@ -1290,7 +1504,7 @@ export default function Home() {
                                   className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
                                 >
                                   <option value="">ソート列を選択</option>
-                                  {(sortedMergedResult || filterColumns(mergedResult, selectedColumns)).headers.map((header, hIdx) => (
+                                  {(sortedMergedResult || filterColumns(mergedResult, selectedColumns, columnOrder)).headers.map((header, hIdx) => (
                                     <option key={hIdx} value={header}>
                                       {header}
                                     </option>
@@ -1338,7 +1552,26 @@ export default function Home() {
                           })}
                         </div>
                       </div>
-                      <PreviewTable data={sortedMergedResult || filterColumns(mergedResult, selectedColumns)} />
+                      {(() => {
+                        const previewData = sortedMergedResult || filterColumns(mergedResult, selectedColumns, columnOrder);
+                        // 数値列を判定
+                        const amountColumnHeaders = new Set<string>();
+                        compareColumns.forEach(col => {
+                          if (col.left && col.right) {
+                            amountColumnHeaders.add(`L__${col.left}`);
+                            amountColumnHeaders.add(`R__${col.right}`);
+                            if (col.label) {
+                              amountColumnHeaders.add(col.label);
+                            }
+                          }
+                        });
+                        const numericColumns = previewData.headers.filter(header => 
+                          amountColumnHeaders.has(header) || 
+                          compareColumns.some(col => col.label === header) ||
+                          (header.includes('L__') && (header.includes('残高') || header.includes('借方') || header.includes('貸方') || header.includes('金額') || header.includes('発生')))
+                        );
+                        return <PreviewTable data={previewData} numericColumns={numericColumns} />;
+                      })()}
                     </div>
                     
                     {/* Excel出力オプション */}
@@ -1425,6 +1658,7 @@ export default function Home() {
                   <label className="text-sm font-medium">ファイル</label>
                   <div className="flex items-center gap-2">
                     <input
+                      id="split-file-input"
                       ref={splitFileInputRef}
                       type="file"
                       accept=".xlsx,.xls"
@@ -1433,7 +1667,13 @@ export default function Home() {
                     />
                     <Button
                       variant="outline"
-                      onClick={() => splitFileInputRef.current?.click()}
+                      type="button"
+                      onClick={() => {
+                        const input = document.getElementById('split-file-input') as HTMLInputElement;
+                        if (input) {
+                          input.click();
+                        }
+                      }}
                     >
                       <Upload className="mr-2 h-4 w-4" />
                       ファイルを選択
@@ -1509,9 +1749,10 @@ export default function Home() {
                     </div>
                     
                     {/* 列選択セクション */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">出力する列を選択（結合キーは必須）</label>
-                      <div className="max-h-[calc(100vh-500px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <label className="text-sm font-medium">出力する列を選択（結合キーは必須）</label>
+                        <div className="max-h-[calc(100vh-500px)] min-h-[300px] overflow-y-auto rounded-md border border-input bg-background p-3 space-y-2">
                         {splitResult.parts[0].table.headers.map((header: string, idx: number) => {
                           const isKeyColumn = splitKeys.includes(header);
                           const isChecked = selectedSplitColumns.includes(header);
@@ -1527,9 +1768,13 @@ export default function Home() {
                                 onCheckedChange={(checked) => {
                                   if (!isDisabled) {
                                     if (checked) {
-                                      setSelectedSplitColumns([...selectedSplitColumns, header]);
+                                      const newColumns = [...selectedSplitColumns, header];
+                                      setSelectedSplitColumns(newColumns);
+                                      setSplitColumnOrder(newColumns);
                                     } else {
-                                      setSelectedSplitColumns(selectedSplitColumns.filter(c => c !== header));
+                                      const newColumns = selectedSplitColumns.filter(c => c !== header);
+                                      setSelectedSplitColumns(newColumns);
+                                      setSplitColumnOrder(splitColumnOrder.filter(c => c !== header));
                                       // 数値列の選択も解除
                                       setSplitNumericColumns(splitNumericColumns.filter(c => c !== header));
                                     }
@@ -1567,37 +1812,99 @@ export default function Home() {
                             </div>
                           );
                         })}
+                        </div>
                       </div>
-                    </div>
-                    
-                    {/* プレビューセクション */}
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium">プレビュー</label>
-                      <div className="max-h-96 overflow-auto rounded-md border">
-                        <table className="w-full text-sm">
-                          <thead className="bg-muted sticky top-0">
-                            <tr>
-                              <th className="px-4 py-2 text-left font-medium border-b">ファイル名</th>
-                              <th className="px-4 py-2 text-left font-medium border-b">行数</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {splitResult.parts.slice(0, 100).map((part: any, idx: number) => (
-                              <tr key={idx} className="border-b hover:bg-muted/50">
-                                <td className="px-4 py-2 max-w-xs truncate" title={part.key_value}>
-                                  {part.key_value}
-                                </td>
-                                <td className="px-4 py-2">{part.table.rows.length}行</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {splitResult.parts.length > 100 && (
-                          <div className="p-2 text-xs text-muted-foreground text-center border-t">
-                            最初の100件を表示しています（全{splitResult.parts.length}件）
+                      {selectedSplitColumns.length > 0 && (
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">列の表示順序</label>
+                          <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                            {(splitColumnOrder.length > 0 && splitColumnOrder.length === selectedSplitColumns.length 
+                              ? splitColumnOrder.filter(col => selectedSplitColumns.includes(col))
+                              : selectedSplitColumns
+                            ).map((col, idx) => {
+                              // splitColumnOrderが空または不一致の場合は、selectedSplitColumnsの順序を使用
+                              const currentOrder = splitColumnOrder.length > 0 && splitColumnOrder.length === selectedSplitColumns.length
+                                ? splitColumnOrder.filter(c => selectedSplitColumns.includes(c))
+                                : selectedSplitColumns;
+                              
+                              const isDragging = draggedSplitColumn === col;
+                              
+                              return (
+                                <div
+                                  key={col}
+                                  draggable
+                                  onDragStart={(e) => {
+                                    setDraggedSplitColumn(col);
+                                    e.dataTransfer.effectAllowed = "move";
+                                  }}
+                                  onDragOver={(e) => {
+                                    e.preventDefault();
+                                    e.dataTransfer.dropEffect = "move";
+                                  }}
+                                  onDrop={(e) => {
+                                    e.preventDefault();
+                                    if (draggedSplitColumn && draggedSplitColumn !== col) {
+                                      const newOrder = [...currentOrder];
+                                      const draggedIdx = newOrder.indexOf(draggedSplitColumn);
+                                      const targetIdx = newOrder.indexOf(col);
+                                      newOrder.splice(draggedIdx, 1);
+                                      newOrder.splice(targetIdx, 0, draggedSplitColumn);
+                                      setSplitColumnOrder(newOrder);
+                                    }
+                                    setDraggedSplitColumn(null);
+                                  }}
+                                  onDragEnd={() => {
+                                    setDraggedSplitColumn(null);
+                                  }}
+                                  className={`flex items-center justify-between p-2 rounded-md bg-muted/50 cursor-move transition-all ${
+                                    isDragging ? "opacity-50" : "hover:bg-muted"
+                                  }`}
+                                >
+                                  <div className="flex items-center space-x-2 flex-1">
+                                    <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
+                                    <span className="text-sm font-medium">{col}</span>
+                                    <span className="text-xs text-muted-foreground ml-2">（ドラッグで移動）</span>
+                                  </div>
+                                  <div className="flex items-center space-x-1">
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (idx > 0) {
+                                          const newOrder = [...currentOrder];
+                                          [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
+                                          setSplitColumnOrder(newOrder);
+                                        }
+                                      }}
+                                      disabled={idx === 0}
+                                      className="h-6 w-6"
+                                    >
+                                      <ChevronUp className="h-3 w-3" />
+                                    </Button>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (idx < currentOrder.length - 1) {
+                                          const newOrder = [...currentOrder];
+                                          [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
+                                          setSplitColumnOrder(newOrder);
+                                        }
+                                      }}
+                                      disabled={idx === currentOrder.length - 1}
+                                      className="h-6 w-6"
+                                    >
+                                      <ChevronDown className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                     
                     {/* データプレビュー（最初の5個のファイルの内容を表示） */}
@@ -1606,8 +1913,8 @@ export default function Home() {
                         <label className="text-sm font-medium">データプレビュー（最初の5個のファイル）</label>
                         
                         {splitResult.parts.slice(0, 5).map((part: any, partIdx: number) => {
-                          // 選択された列でフィルタリング
-                          const filteredData = filterColumns(part.table, selectedSplitColumns);
+                          // 選択された列でフィルタリング（順序を考慮）
+                          const filteredData = filterColumns(part.table, selectedSplitColumns, splitColumnOrder);
                           
                           // ソート処理
                           let sortedData = filteredData;
@@ -1642,10 +1949,40 @@ export default function Home() {
                               <div className="text-sm font-medium border-b pb-1">
                                 {part.key_value} ({part.table.rows.length}行)
                               </div>
-                              <PreviewTable data={sortedData} />
+                              <PreviewTable data={sortedData} numericColumns={splitNumericColumns.filter(col => filteredData.headers.includes(col))} />
                             </div>
                           );
                         })}
+                        
+                        {/* プレビューセクション（行数一覧） */}
+                        <div className="space-y-2">
+                          <label className="text-sm font-medium">プレビュー（行数一覧）</label>
+                          <div className="max-h-96 overflow-auto rounded-md border">
+                            <table className="w-full text-sm">
+                              <thead className="bg-muted sticky top-0">
+                                <tr>
+                                  <th className="px-4 py-2 text-left font-medium border-b">ファイル名</th>
+                                  <th className="px-4 py-2 text-left font-medium border-b">行数</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {splitResult.parts.slice(0, 100).map((part: any, idx: number) => (
+                                  <tr key={idx} className="border-b hover:bg-muted/50">
+                                    <td className="px-4 py-2 max-w-xs truncate" title={part.key_value}>
+                                      {part.key_value}
+                                    </td>
+                                    <td className="px-4 py-2">{part.table.rows.length}行</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                            {splitResult.parts.length > 100 && (
+                              <div className="p-2 text-xs text-muted-foreground text-center border-t">
+                                最初の100件を表示しています（全{splitResult.parts.length}件）
+                              </div>
+                            )}
+                          </div>
+                        </div>
                         
                         {/* ソートセクション（全ファイル共通） */}
                         <div className="space-y-2 p-3 rounded-md border bg-muted/50">
@@ -1671,7 +2008,7 @@ export default function Home() {
                                     className="flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm"
                                   >
                                     <option value="">ソート列を選択</option>
-                                    {splitResult.parts.length > 0 && filterColumns(splitResult.parts[0].table, selectedSplitColumns).headers.map((header: string, hIdx: number) => (
+                                    {splitResult.parts.length > 0 && filterColumns(splitResult.parts[0].table, selectedSplitColumns, splitColumnOrder).headers.map((header: string, hIdx: number) => (
                                       <option key={hIdx} value={header}>
                                         {header}
                                       </option>
