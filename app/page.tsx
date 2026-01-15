@@ -20,23 +20,184 @@ const themes: { id: Theme; name: string; description: string }[] = [
   { id: "forest", name: "フォレスト", description: "緑系" },
 ];
 
+// データ形式の型定義
+type DataFormat = 
+  | "text"           // 文字列（デフォルト）
+  | "number"         // 数値（整数）
+  | "number_decimal" // 数値（小数点）
+  | "date_ymd"       // 日付（yyyy/mm/dd）
+  | "date_ymd_dash"  // 日付（yyyy-mm-dd）
+  | "date_mdy"       // 日付（mm/dd/yyyy）
+  | "time"           // 時刻（hh:mm:ss）
+  | "datetime"       // 日時（yyyy/mm/dd hh:mm:ss）
+  | "currency_jpy"   // 通貨（¥）
+  | "currency_usd"   // 通貨（$）
+  | "currency_eur"   // 通貨（€）
+  | "percent";       // パーセント
+
+// データ形式の定義
+const dataFormats: { id: DataFormat; name: string; excelFormat: string }[] = [
+  { id: "text", name: "文字列", excelFormat: "@" },
+  { id: "number", name: "数値（整数）", excelFormat: "#,##0" },
+  { id: "number_decimal", name: "数値（小数点）", excelFormat: "#,##0.00" },
+  { id: "date_ymd", name: "日付（yyyy/mm/dd）", excelFormat: "yyyy/mm/dd" },
+  { id: "date_ymd_dash", name: "日付（yyyy-mm-dd）", excelFormat: "yyyy-mm-dd" },
+  { id: "date_mdy", name: "日付（mm/dd/yyyy）", excelFormat: "mm/dd/yyyy" },
+  { id: "time", name: "時刻（hh:mm:ss）", excelFormat: "hh:mm:ss" },
+  { id: "datetime", name: "日時（yyyy/mm/dd hh:mm:ss）", excelFormat: "yyyy/mm/dd hh:mm:ss" },
+  { id: "currency_jpy", name: "通貨（¥）", excelFormat: "¥#,##0" },
+  { id: "currency_usd", name: "通貨（$）", excelFormat: "$#,##0.00" },
+  { id: "currency_eur", name: "通貨（€）", excelFormat: "€#,##0.00" },
+  { id: "percent", name: "パーセント", excelFormat: "0.00%" },
+];
+
 // プレビューテーブルコンポーネント
-function PreviewTable({ data, numericColumns = [] }: { data: TableData; numericColumns?: string[] }) {
+function PreviewTable({ 
+  data, 
+  numericColumns = [], 
+  columnFormats = {} 
+}: { 
+  data: TableData; 
+  numericColumns?: string[]; 
+  columnFormats?: Record<string, DataFormat>;
+}) {
   if (!data || data.rows.length === 0) {
     return <div className="text-sm text-muted-foreground">データがありません</div>;
   }
 
-  // 数値をカンマ区切りでフォーマット
-  const formatNumber = (value: string, header: string): string => {
-    if (numericColumns.includes(header)) {
+  // データ形式に応じて値をフォーマット
+  const formatValue = (value: string, header: string): string => {
+    if (!value) return value;
+    
+    const format = columnFormats[header] || "text";
+    
+    // 形式が指定されていない場合は、従来の数値列処理
+    if (!columnFormats[header] && numericColumns.includes(header)) {
       const num = parseFloat(value);
       if (!isNaN(num)) {
-        // 小数点以下があるかチェック
         const hasDecimal = num % 1 !== 0;
         return hasDecimal ? num.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : num.toLocaleString('ja-JP');
       }
+      return value;
     }
-    return value;
+    
+    // データ形式に応じてフォーマット
+    switch (format) {
+      case "text":
+        return value;
+      case "number": {
+        const num = parseFloat(value);
+        return isNaN(num) ? value : Math.round(num).toLocaleString('ja-JP');
+      }
+      case "number_decimal": {
+        const num = parseFloat(value);
+        return isNaN(num) ? value : num.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      }
+      case "date_ymd": {
+        // Excelのシリアル値（5桁の数字）を検出
+        const serialMatch = value.match(/^\d{5}$/);
+        if (serialMatch) {
+          const serial = parseInt(value, 10);
+          const excelEpoch = new Date(1899, 11, 30);
+          const date = new Date(excelEpoch.getTime() + serial * 24 * 60 * 60 * 1000);
+          if (date.getTime() && !isNaN(date.getTime())) {
+            return date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '/');
+          }
+        }
+        // yyyy/mm/dd または yyyy-mm-dd
+        const ymdMatch = value.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+        if (ymdMatch) {
+          const year = parseInt(ymdMatch[1], 10);
+          const month = parseInt(ymdMatch[2], 10);
+          const day = parseInt(ymdMatch[3], 10);
+          return `${year}/${month.toString().padStart(2, '0')}/${day.toString().padStart(2, '0')}`;
+        }
+        return value;
+      }
+      case "date_ymd_dash": {
+        const serialMatch = value.match(/^\d{5}$/);
+        if (serialMatch) {
+          const serial = parseInt(value, 10);
+          const excelEpoch = new Date(1899, 11, 30);
+          const date = new Date(excelEpoch.getTime() + serial * 24 * 60 * 60 * 1000);
+          if (date.getTime() && !isNaN(date.getTime())) {
+            return date.toLocaleDateString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit' }).replace(/\//g, '-');
+          }
+        }
+        const ymdMatch = value.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+        if (ymdMatch) {
+          const year = parseInt(ymdMatch[1], 10);
+          const month = parseInt(ymdMatch[2], 10);
+          const day = parseInt(ymdMatch[3], 10);
+          return `${year}-${month.toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
+        }
+        return value;
+      }
+      case "date_mdy": {
+        const serialMatch = value.match(/^\d{5}$/);
+        if (serialMatch) {
+          const serial = parseInt(value, 10);
+          const excelEpoch = new Date(1899, 11, 30);
+          const date = new Date(excelEpoch.getTime() + serial * 24 * 60 * 60 * 1000);
+          if (date.getTime() && !isNaN(date.getTime())) {
+            return date.toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' });
+          }
+        }
+        const mdyMatch = value.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+        if (mdyMatch) {
+          const month = parseInt(mdyMatch[1], 10);
+          const day = parseInt(mdyMatch[2], 10);
+          const year = parseInt(mdyMatch[3], 10);
+          return `${month.toString().padStart(2, '0')}/${day.toString().padStart(2, '0')}/${year}`;
+        }
+        return value;
+      }
+      case "time": {
+        const timeMatch = value.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+        if (timeMatch) {
+          return value;
+        }
+        return value;
+      }
+      case "datetime": {
+        const serialMatch = value.match(/^\d{5}$/);
+        if (serialMatch) {
+          const serial = parseInt(value, 10);
+          const excelEpoch = new Date(1899, 11, 30);
+          const date = new Date(excelEpoch.getTime() + serial * 24 * 60 * 60 * 1000);
+          if (date.getTime() && !isNaN(date.getTime())) {
+            return date.toLocaleString('ja-JP', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+          }
+        }
+        const dateTimeMatch = value.match(/(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+        if (dateTimeMatch) {
+          return value;
+        }
+        return value;
+      }
+      case "currency_jpy": {
+        const num = parseFloat(value.replace(/[¥,\s]/g, ''));
+        return isNaN(num) ? value : `¥${Math.round(num).toLocaleString('ja-JP')}`;
+      }
+      case "currency_usd": {
+        const num = parseFloat(value.replace(/[$,\s]/g, ''));
+        return isNaN(num) ? value : `$${num.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+      case "currency_eur": {
+        const num = parseFloat(value.replace(/[€,\s]/g, ''));
+        return isNaN(num) ? value : `€${num.toLocaleString('ja-JP', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+      case "percent": {
+        const num = parseFloat(value.replace(/[%,\s]/g, ''));
+        if (isNaN(num)) return value;
+        // パーセント表示（値が1以上100以下の場合は既にパーセント値として扱う）
+        // 例：50 → 50.00%、0.5 → 0.50%
+        const percentValue = num >= 1 && num <= 100 ? num : num * 100;
+        return `${percentValue.toFixed(2)}%`;
+      }
+      default:
+        return value;
+    }
   };
 
   return (
@@ -56,7 +217,7 @@ function PreviewTable({ data, numericColumns = [] }: { data: TableData; numericC
             <tr key={rowIdx} className="border-b hover:bg-muted/50">
               {row.map((cell, cellIdx) => {
                 const header = data.headers[cellIdx];
-                const formattedValue = formatNumber(cell, header);
+                const formattedValue = formatValue(cell, header);
                 return (
                   <td key={cellIdx} className="px-4 py-2 max-w-xs truncate" title={cell}>
                     {formattedValue}
@@ -117,7 +278,116 @@ export default function Home() {
   const [columnOrder, setColumnOrder] = useState<string[]>([]); // 列の表示順序
   const [sortColumns, setSortColumns] = useState<{ column: string; direction: "asc" | "desc" }[]>([]);
   const [draggedColumn, setDraggedColumn] = useState<string | null>(null); // ドラッグ中の列
+  const [columnFormats, setColumnFormats] = useState<Record<string, DataFormat>>({}); // 列ごとのデータ形式（比較モード）
+  const [showColumnOrder, setShowColumnOrder] = useState(false); // 列の表示順序セクションの表示/非表示
+  const [showColumnFormats, setShowColumnFormats] = useState(false); // データ形式セクションの表示/非表示
+  const [showSort, setShowSort] = useState(false); // ソートセクションの表示/非表示
   
+  // 日付の検出と変換のヘルパー関数
+  const parseDate = (value: string): Date | null => {
+    if (!value || typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    
+    // Excelのシリアル値（5桁の数字）を検出（最初にチェック）
+    const serialMatch = trimmed.match(/^\d{5}$/);
+    if (serialMatch) {
+      const serial = parseInt(trimmed, 10);
+      // Excelのシリアル値は1900年1月1日からの日数（ただし1900年を閏年として扱うバグがあるため、1日引く）
+      // Excelのエポックは1899年12月30日（1900年1月1日を1として扱う）
+      const excelEpoch = new Date(1899, 11, 30);
+      const date = new Date(excelEpoch.getTime() + serial * 24 * 60 * 60 * 1000);
+      if (date.getTime() && !isNaN(date.getTime())) {
+        return date;
+      }
+    }
+    
+    // yyyy/mm/dd または yyyy-mm-dd
+    const ymdMatch = trimmed.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+    if (ymdMatch) {
+      const year = parseInt(ymdMatch[1], 10);
+      const month = parseInt(ymdMatch[2], 10) - 1;
+      const day = parseInt(ymdMatch[3], 10);
+      const date = new Date(year, month, day);
+      if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+        return date;
+      }
+    }
+    
+    // mm/dd/yyyy
+    const mdyMatch = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+    if (mdyMatch) {
+      const month = parseInt(mdyMatch[1], 10) - 1;
+      const day = parseInt(mdyMatch[2], 10);
+      const year = parseInt(mdyMatch[3], 10);
+      const date = new Date(year, month, day);
+      if (date.getFullYear() === year && date.getMonth() === month && date.getDate() === day) {
+        return date;
+      }
+    }
+    
+    return null;
+  };
+
+  // データ形式に応じて値を変換
+  const convertValueByFormat = (value: string, format: DataFormat): any => {
+    if (!value) return value;
+    
+    switch (format) {
+      case "text":
+        return value;
+      case "number":
+        const num = parseFloat(value);
+        return isNaN(num) ? value : Math.round(num);
+      case "number_decimal":
+        const numDec = parseFloat(value);
+        return isNaN(numDec) ? value : numDec;
+      case "date_ymd":
+      case "date_ymd_dash":
+      case "date_mdy":
+        const date = parseDate(value);
+        // Dateオブジェクトを返す（ExcelJSが日付として認識）
+        return date || value;
+      case "time":
+        // 時刻形式の検出（hh:mm:ss または hh:mm）
+        const timeMatch = value.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+        if (timeMatch) {
+          // 時刻をDateオブジェクトに変換（1900-01-01を基準日として使用）
+          const hours = parseInt(timeMatch[1], 10);
+          const minutes = parseInt(timeMatch[2], 10);
+          const seconds = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+          const timeDate = new Date(1900, 0, 1, hours, minutes, seconds);
+          return timeDate;
+        }
+        return value;
+      case "datetime":
+        const dateTime = parseDate(value);
+        // 日時形式の検出（yyyy/mm/dd hh:mm:ss など）
+        const dateTimeMatch = value.match(/(\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+        if (dateTimeMatch) {
+          const datePart = parseDate(dateTimeMatch[1]);
+          if (datePart) {
+            const hours = parseInt(dateTimeMatch[2], 10);
+            const minutes = parseInt(dateTimeMatch[3], 10);
+            const seconds = dateTimeMatch[4] ? parseInt(dateTimeMatch[4], 10) : 0;
+            datePart.setHours(hours, minutes, seconds);
+            return datePart;
+          }
+        }
+        return dateTime || value;
+      case "currency_jpy":
+      case "currency_usd":
+      case "currency_eur":
+        const currencyNum = parseFloat(value.replace(/[¥$€,\s]/g, ''));
+        return isNaN(currencyNum) ? value : currencyNum;
+      case "percent":
+        const percentNum = parseFloat(value.replace(/[%,\s]/g, ''));
+        return isNaN(percentNum) ? value : percentNum / 100;
+      default:
+        return value;
+    }
+  };
+
   // 選択された列のみを含むテーブルデータを生成（順序を考慮）
   const filterColumns = (data: TableData, columns: string[], order?: string[]): TableData => {
     // 順序が指定されている場合はそれを使用、ない場合はcolumnsの順序を使用
@@ -178,6 +448,11 @@ export default function Home() {
   const [splitNumericColumns, setSplitNumericColumns] = useState<string[]>([]);
   const [splitSortColumns, setSplitSortColumns] = useState<{ column: string; direction: "asc" | "desc" }[]>([]);
   const [draggedSplitColumn, setDraggedSplitColumn] = useState<string | null>(null); // ドラッグ中の列（分割モード）
+  const [splitColumnFormats, setSplitColumnFormats] = useState<Record<string, DataFormat>>({}); // 列ごとのデータ形式（分割モード）
+  const [showSplitColumnOrder, setShowSplitColumnOrder] = useState(false); // 列の表示順序セクションの表示/非表示（分割モード）
+  const [showSplitColumnFormats, setShowSplitColumnFormats] = useState(false); // データ形式セクションの表示/非表示（分割モード）
+  const [showSplitSort, setShowSplitSort] = useState(false); // ソートセクションの表示/非表示（分割モード）
+  const [showRowCountPreview, setShowRowCountPreview] = useState(false); // 行数一覧の表示/非表示（分割モード）
   
   // 分割モードのソート処理（Hooksの順序を保つため、条件分岐の外に配置）
   const sortedSplitPreviewData = useMemo(() => {
@@ -695,11 +970,19 @@ export default function Home() {
     // データ行を追加
     filteredMerged.rows.forEach(row => {
       const rowData = row.map((cell, idx) => {
+        const header = filteredMerged.headers[idx];
+        const format = columnFormats[header] || "text";
+        
+        // 既存の金額列の処理（後方互換性のため）
         if (amountColumnIndices.includes(idx)) {
           const num = parseFloat(cell || "0");
-          return isNaN(num) ? cell : num;
+          if (!isNaN(num)) {
+            return num;
+          }
         }
-        return cell;
+        
+        // データ形式に応じて値を変換
+        return convertValueByFormat(cell, format);
       });
       worksheet.addRow(rowData);
     });
@@ -737,8 +1020,19 @@ export default function Home() {
           };
         }
 
-        // 金額列の数値形式を設定（小数点以下がある場合は表示）
-        if (amountColumnIndices.includes(colNumber - 1)) {
+        const header = filteredMerged.headers[colNumber - 1];
+        const format = columnFormats[header] || "text";
+        
+        // データ形式に応じてnumFmtを設定
+        if (format !== "text" && rowNumber > 1 && rowNumber <= totalRowNumber) {
+          const formatDef = dataFormats.find(f => f.id === format);
+          if (formatDef) {
+            cell.numFmt = formatDef.excelFormat;
+          }
+        }
+        
+        // 既存の金額列の処理（後方互換性のため、形式が指定されていない場合のみ）
+        if (!columnFormats[header] && amountColumnIndices.includes(colNumber - 1)) {
           const amountIdx = amountColumnIndices.indexOf(colNumber - 1);
           const hasDecimal = hasDecimalPlaces[amountIdx];
           
@@ -749,6 +1043,39 @@ export default function Home() {
         }
       });
     });
+
+    // 列幅を自動調整
+    const columnWidths = filteredMerged.headers.map((header, colIdx) => {
+      // ヘッダーの幅を計算（日本語文字は約2文字分）
+      let maxWidth = header.length * 2;
+      
+      // データ行の最大幅を計算
+      filteredMerged.rows.forEach(row => {
+        const cellValue = row[colIdx] || "";
+        // セルの値を文字列に変換して幅を計算
+        const cellStr = String(cellValue);
+        // 日本語文字を考慮した幅計算（簡易版：全角文字を2、半角文字を1として計算）
+        const cellWidth = cellStr.split('').reduce((sum, char) => {
+          // 全角文字（日本語、全角数字など）は2、半角文字は1
+          return sum + (char.charCodeAt(0) > 127 ? 2 : 1);
+        }, 0);
+        maxWidth = Math.max(maxWidth, cellWidth);
+      });
+      
+      // 合計行がある場合も考慮
+      if (excelShowTotal && totals[colIdx]) {
+        const totalStr = String(totals[colIdx]);
+        const totalWidth = totalStr.split('').reduce((sum, char) => {
+          return sum + (char.charCodeAt(0) > 127 ? 2 : 1);
+        }, 0);
+        maxWidth = Math.max(maxWidth, totalWidth);
+      }
+      
+      // 余裕を持たせて+2、最小幅10、最大幅50
+      return Math.min(Math.max(maxWidth + 2, 10), 50);
+    });
+    
+    worksheet.columns = columnWidths.map(width => ({ width }));
 
     // ファイルをダウンロード
     const buffer = await workbook.xlsx.writeBuffer();
@@ -852,11 +1179,18 @@ export default function Home() {
       filteredData.rows.forEach(row => {
         const rowData = row.map((cell, cellIdx) => {
           const header = filteredData.headers[cellIdx];
-          if (splitNumericColumns.includes(header)) {
+          const format = splitColumnFormats[header] || "text";
+          
+          // 既存の数値列の処理（後方互換性のため）
+          if (!splitColumnFormats[header] && splitNumericColumns.includes(header)) {
             const num = parseFloat(cell || "0");
-            return isNaN(num) ? cell : num;
+            if (!isNaN(num)) {
+              return num;
+            }
           }
-          return cell;
+          
+          // データ形式に応じて値を変換
+          return convertValueByFormat(cell, format);
         });
         worksheet.addRow(rowData);
       });
@@ -878,8 +1212,9 @@ export default function Home() {
         });
       });
 
+      let totals: (string | number)[] | null = null;
       if (numericColumnIndices.length > 0 && excelShowTotal) {
-        const totals: (string | number)[] = filteredData.headers.map((header, idx) => {
+        totals = filteredData.headers.map((header, idx) => {
           if (splitNumericColumns.includes(header)) {
             const sum = filteredData.rows.reduce((acc, row) => {
               const val = parseFloat(row[idx] || "0") || 0;
@@ -922,8 +1257,19 @@ export default function Home() {
             };
           }
 
-          // 数値列の数値形式を設定（小数点以下がある場合は表示）
-          if (numericColumnIndices.includes(colNumber - 1)) {
+          const header = filteredData.headers[colNumber - 1];
+          const format = splitColumnFormats[header] || "text";
+          
+          // データ形式に応じてnumFmtを設定
+          if (format !== "text" && rowNumber > 1 && rowNumber <= totalRowNumber) {
+            const formatDef = dataFormats.find(f => f.id === format);
+            if (formatDef) {
+              cell.numFmt = formatDef.excelFormat;
+            }
+          }
+          
+          // 既存の数値列の処理（後方互換性のため、形式が指定されていない場合のみ）
+          if (!splitColumnFormats[header] && numericColumnIndices.includes(colNumber - 1)) {
             const numericIdx = numericColumnIndices.indexOf(colNumber - 1);
             const hasDecimal = hasDecimalPlaces[numericIdx];
             
@@ -934,6 +1280,42 @@ export default function Home() {
           }
         });
       });
+
+      // 列幅を自動調整
+      const columnWidths = filteredData.headers.map((header, colIdx) => {
+        // ヘッダーの幅を計算（日本語文字は約2文字分）
+        let maxWidth = header.length * 2;
+        
+        // データ行の最大幅を計算
+        filteredData.rows.forEach(row => {
+          const cellValue = row[colIdx] || "";
+          // セルの値を文字列に変換して幅を計算
+          const cellStr = String(cellValue);
+          // 日本語文字を考慮した幅計算（簡易版：全角文字を2、半角文字を1として計算）
+          const cellWidth = cellStr.split('').reduce((sum, char) => {
+            // 全角文字（日本語、全角数字など）は2、半角文字は1
+            return sum + (char.charCodeAt(0) > 127 ? 2 : 1);
+          }, 0);
+          maxWidth = Math.max(maxWidth, cellWidth);
+        });
+        
+        // 合計行がある場合も考慮
+        if (excelShowTotal && numericColumnIndices.length > 0 && totals) {
+          const totalValue = totals[colIdx];
+          if (totalValue !== undefined && totalValue !== "") {
+            const totalStr = String(totalValue);
+            const totalWidth = totalStr.split('').reduce((sum, char) => {
+              return sum + (char.charCodeAt(0) > 127 ? 2 : 1);
+            }, 0);
+            maxWidth = Math.max(maxWidth, totalWidth);
+          }
+        }
+        
+        // 余裕を持たせて+2、最小幅10、最大幅50
+        return Math.min(Math.max(maxWidth + 2, 10), 50);
+      });
+      
+      worksheet.columns = columnWidths.map(width => ({ width }));
 
       // バッファに書き込み
       const excelBuffer = await workbook.xlsx.writeBuffer();
@@ -1386,95 +1768,153 @@ export default function Home() {
                         </div>
                       </div>
                       {selectedColumns.length > 0 && (
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium">列の表示順序</label>
-                          <div className="space-y-2 rounded-md border border-input bg-background p-3">
-                            {(columnOrder.length > 0 && columnOrder.length === selectedColumns.length 
-                              ? columnOrder.filter(col => selectedColumns.includes(col))
-                              : selectedColumns
-                            ).map((col, idx) => {
-                              // columnOrderが空または不一致の場合は、selectedColumnsの順序を使用
-                              const currentOrder = columnOrder.length > 0 && columnOrder.length === selectedColumns.length
-                                ? columnOrder.filter(c => selectedColumns.includes(c))
-                                : selectedColumns;
-                              
-                              const isDragging = draggedColumn === col;
-                              
-                              return (
-                                <div
-                                  key={col}
-                                  draggable
-                                  onDragStart={(e) => {
-                                    setDraggedColumn(col);
-                                    e.dataTransfer.effectAllowed = "move";
-                                  }}
-                                  onDragOver={(e) => {
-                                    e.preventDefault();
-                                    e.dataTransfer.dropEffect = "move";
-                                  }}
-                                  onDrop={(e) => {
-                                    e.preventDefault();
-                                    if (draggedColumn && draggedColumn !== col) {
-                                      const newOrder = [...currentOrder];
-                                      const draggedIdx = newOrder.indexOf(draggedColumn);
-                                      const targetIdx = newOrder.indexOf(col);
-                                      newOrder.splice(draggedIdx, 1);
-                                      newOrder.splice(targetIdx, 0, draggedColumn);
-                                      setColumnOrder(newOrder);
-                                    }
-                                    setDraggedColumn(null);
-                                  }}
-                                  onDragEnd={() => {
-                                    setDraggedColumn(null);
-                                  }}
-                                  className={`flex items-center justify-between p-2 rounded-md bg-muted/50 cursor-move transition-all ${
-                                    isDragging ? "opacity-50" : "hover:bg-muted"
-                                  }`}
-                                >
-                                  <div className="flex items-center space-x-2 flex-1">
-                                    <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
-                                    <span className="text-sm font-medium">{col}</span>
-                                    <span className="text-xs text-muted-foreground ml-2">（ドラッグで移動）</span>
+                        <>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-sm font-medium">列の表示順序</label>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => setShowColumnOrder(!showColumnOrder)}
+                                className="h-6 w-6"
+                              >
+                                {showColumnOrder ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
+                            </div>
+                            {showColumnOrder && (
+                            <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                              {(columnOrder.length > 0 && columnOrder.length === selectedColumns.length 
+                                ? columnOrder.filter(col => selectedColumns.includes(col))
+                                : selectedColumns
+                              ).map((col, idx) => {
+                                // columnOrderが空または不一致の場合は、selectedColumnsの順序を使用
+                                const currentOrder = columnOrder.length > 0 && columnOrder.length === selectedColumns.length
+                                  ? columnOrder.filter(c => selectedColumns.includes(c))
+                                  : selectedColumns;
+                                
+                                const isDragging = draggedColumn === col;
+                                
+                                return (
+                                  <div
+                                    key={col}
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setDraggedColumn(col);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragOver={(e) => {
+                                      e.preventDefault();
+                                      e.dataTransfer.dropEffect = "move";
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      if (draggedColumn && draggedColumn !== col) {
+                                        const newOrder = [...currentOrder];
+                                        const draggedIdx = newOrder.indexOf(draggedColumn);
+                                        const targetIdx = newOrder.indexOf(col);
+                                        newOrder.splice(draggedIdx, 1);
+                                        newOrder.splice(targetIdx, 0, draggedColumn);
+                                        setColumnOrder(newOrder);
+                                      }
+                                      setDraggedColumn(null);
+                                    }}
+                                    onDragEnd={() => {
+                                      setDraggedColumn(null);
+                                    }}
+                                    className={`flex items-center justify-between p-2 rounded-md bg-muted/50 cursor-move transition-all ${
+                                      isDragging ? "opacity-50" : "hover:bg-muted"
+                                    }`}
+                                  >
+                                    <div className="flex items-center space-x-2 flex-1">
+                                      <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
+                                      <span className="text-sm font-medium">{col}</span>
+                                      <span className="text-xs text-muted-foreground ml-2">（ドラッグで移動）</span>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (idx > 0) {
+                                            const newOrder = [...currentOrder];
+                                            [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
+                                            setColumnOrder(newOrder);
+                                          }
+                                        }}
+                                        disabled={idx === 0}
+                                        className="h-6 w-6"
+                                      >
+                                        <ChevronUp className="h-3 w-3" />
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (idx < currentOrder.length - 1) {
+                                            const newOrder = [...currentOrder];
+                                            [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
+                                            setColumnOrder(newOrder);
+                                          }
+                                        }}
+                                        disabled={idx === currentOrder.length - 1}
+                                        className="h-6 w-6"
+                                      >
+                                        <ChevronDown className="h-3 w-3" />
+                                      </Button>
+                                    </div>
                                   </div>
-                                  <div className="flex items-center space-x-1">
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (idx > 0) {
-                                          const newOrder = [...currentOrder];
-                                          [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
-                                          setColumnOrder(newOrder);
-                                        }
-                                      }}
-                                      disabled={idx === 0}
-                                      className="h-6 w-6"
-                                    >
-                                      <ChevronUp className="h-3 w-3" />
-                                    </Button>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (idx < currentOrder.length - 1) {
-                                          const newOrder = [...currentOrder];
-                                          [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
-                                          setColumnOrder(newOrder);
-                                        }
-                                      }}
-                                      disabled={idx === currentOrder.length - 1}
-                                      className="h-6 w-6"
-                                    >
-                                      <ChevronDown className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })}
+                            </div>
+                            )}
                           </div>
-                        </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-sm font-medium">列のデータ形式</label>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => setShowColumnFormats(!showColumnFormats)}
+                                className="h-6 w-6"
+                              >
+                                {showColumnFormats ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
+                            </div>
+                            {showColumnFormats && (
+                            <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                              {selectedColumns.map((col) => {
+                                const currentFormat = columnFormats[col] || "text";
+                                return (
+                                  <div key={col} className="flex items-center justify-between p-2 rounded-md bg-muted/50">
+                                    <span className="text-sm font-medium flex-1">{col}</span>
+                                    <select
+                                      value={currentFormat}
+                                      onChange={(e) => {
+                                        const newFormats = { ...columnFormats };
+                                        if (e.target.value === "text") {
+                                          delete newFormats[col];
+                                        } else {
+                                          newFormats[col] = e.target.value as DataFormat;
+                                        }
+                                        setColumnFormats(newFormats);
+                                      }}
+                                      className="ml-2 rounded-md border border-input bg-background px-2 py-1 text-sm min-w-[200px]"
+                                    >
+                                      {dataFormats.map((format) => (
+                                        <option key={format.id} value={format.id}>
+                                          {format.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            )}
+                          </div>
+                        </>
                       )}
                     </div>
                     
@@ -1482,7 +1922,18 @@ export default function Home() {
                     <div className="space-y-4">
                       {/* ソートセクション */}
                       <div className="space-y-2 p-3 rounded-md border bg-muted/50">
-                        <label className="text-sm font-medium">ソート（最大3列、選択列のみ）</label>
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm font-medium">ソート（最大3列、選択列のみ）</label>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            onClick={() => setShowSort(!showSort)}
+                            className="h-6 w-6"
+                          >
+                            {showSort ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                          </Button>
+                        </div>
+                        {showSort && (
                         <div className="space-y-2">
                           {[0, 1, 2].map((idx) => {
                             const sortCol = sortColumns[idx] || { column: "", direction: "asc" as const };
@@ -1551,6 +2002,7 @@ export default function Home() {
                             );
                           })}
                         </div>
+                        )}
                       </div>
                       {(() => {
                         const previewData = sortedMergedResult || filterColumns(mergedResult, selectedColumns, columnOrder);
@@ -1570,7 +2022,7 @@ export default function Home() {
                           compareColumns.some(col => col.label === header) ||
                           (header.includes('L__') && (header.includes('残高') || header.includes('借方') || header.includes('貸方') || header.includes('金額') || header.includes('発生')))
                         );
-                        return <PreviewTable data={previewData} numericColumns={numericColumns} />;
+                        return <PreviewTable data={previewData} numericColumns={numericColumns} columnFormats={columnFormats} />;
                       })()}
                     </div>
                     
@@ -1756,7 +2208,6 @@ export default function Home() {
                         {splitResult.parts[0].table.headers.map((header: string, idx: number) => {
                           const isKeyColumn = splitKeys.includes(header);
                           const isChecked = selectedSplitColumns.includes(header);
-                          const isNumeric = splitNumericColumns.includes(header);
                           const isDisabled = isKeyColumn;
                           
                           return (
@@ -1775,39 +2226,16 @@ export default function Home() {
                                       const newColumns = selectedSplitColumns.filter(c => c !== header);
                                       setSelectedSplitColumns(newColumns);
                                       setSplitColumnOrder(splitColumnOrder.filter(c => c !== header));
-                                      // 数値列の選択も解除
-                                      setSplitNumericColumns(splitNumericColumns.filter(c => c !== header));
                                     }
                                   }
                                 }}
                               />
-                              {isChecked && !isKeyColumn && (
-                                <Checkbox
-                                  id={`split-numeric-${idx}`}
-                                  checked={isNumeric}
-                                  onCheckedChange={(checked) => {
-                                    if (checked) {
-                                      setSplitNumericColumns([...splitNumericColumns, header]);
-                                    } else {
-                                      setSplitNumericColumns(splitNumericColumns.filter(c => c !== header));
-                                    }
-                                  }}
-                                  className="ml-2"
-                                />
-                              )}
                               <label 
                                 htmlFor={`split-col-${idx}`} 
                                 className={`text-sm font-medium leading-none cursor-pointer ${isDisabled ? 'text-muted-foreground' : ''}`}
                               >
                                 {header}
                                 {isKeyColumn && <span className="text-xs text-muted-foreground ml-1">（必須）</span>}
-                                {isChecked && !isKeyColumn && (
-                                  <span className="text-xs text-muted-foreground ml-2">
-                                    <label htmlFor={`split-numeric-${idx}`} className="cursor-pointer">
-                                      （数値列: {isNumeric ? '✓' : 'なし'}）
-                                    </label>
-                                  </span>
-                                )}
                               </label>
                             </div>
                           );
@@ -1815,95 +2243,153 @@ export default function Home() {
                         </div>
                       </div>
                       {selectedSplitColumns.length > 0 && (
-                        <div className="space-y-2">
-                          <label className="text-sm font-medium">列の表示順序</label>
-                          <div className="space-y-2 rounded-md border border-input bg-background p-3">
-                            {(splitColumnOrder.length > 0 && splitColumnOrder.length === selectedSplitColumns.length 
-                              ? splitColumnOrder.filter(col => selectedSplitColumns.includes(col))
-                              : selectedSplitColumns
-                            ).map((col, idx) => {
-                              // splitColumnOrderが空または不一致の場合は、selectedSplitColumnsの順序を使用
-                              const currentOrder = splitColumnOrder.length > 0 && splitColumnOrder.length === selectedSplitColumns.length
-                                ? splitColumnOrder.filter(c => selectedSplitColumns.includes(c))
-                                : selectedSplitColumns;
-                              
-                              const isDragging = draggedSplitColumn === col;
-                              
-                              return (
-                                <div
-                                  key={col}
-                                  draggable
-                                  onDragStart={(e) => {
-                                    setDraggedSplitColumn(col);
-                                    e.dataTransfer.effectAllowed = "move";
-                                  }}
-                                  onDragOver={(e) => {
-                                    e.preventDefault();
-                                    e.dataTransfer.dropEffect = "move";
-                                  }}
-                                  onDrop={(e) => {
-                                    e.preventDefault();
-                                    if (draggedSplitColumn && draggedSplitColumn !== col) {
-                                      const newOrder = [...currentOrder];
-                                      const draggedIdx = newOrder.indexOf(draggedSplitColumn);
-                                      const targetIdx = newOrder.indexOf(col);
-                                      newOrder.splice(draggedIdx, 1);
-                                      newOrder.splice(targetIdx, 0, draggedSplitColumn);
-                                      setSplitColumnOrder(newOrder);
-                                    }
-                                    setDraggedSplitColumn(null);
-                                  }}
-                                  onDragEnd={() => {
-                                    setDraggedSplitColumn(null);
-                                  }}
-                                  className={`flex items-center justify-between p-2 rounded-md bg-muted/50 cursor-move transition-all ${
-                                    isDragging ? "opacity-50" : "hover:bg-muted"
-                                  }`}
-                                >
-                                  <div className="flex items-center space-x-2 flex-1">
-                                    <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
-                                    <span className="text-sm font-medium">{col}</span>
-                                    <span className="text-xs text-muted-foreground ml-2">（ドラッグで移動）</span>
+                        <>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-sm font-medium">列の表示順序</label>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => setShowSplitColumnOrder(!showSplitColumnOrder)}
+                                className="h-6 w-6"
+                              >
+                                {showSplitColumnOrder ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
+                            </div>
+                            {showSplitColumnOrder && (
+                            <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                              {(splitColumnOrder.length > 0 && splitColumnOrder.length === selectedSplitColumns.length 
+                                ? splitColumnOrder.filter(col => selectedSplitColumns.includes(col))
+                                : selectedSplitColumns
+                              ).map((col, idx) => {
+                                // splitColumnOrderが空または不一致の場合は、selectedSplitColumnsの順序を使用
+                                const currentOrder = splitColumnOrder.length > 0 && splitColumnOrder.length === selectedSplitColumns.length
+                                  ? splitColumnOrder.filter(c => selectedSplitColumns.includes(c))
+                                  : selectedSplitColumns;
+                                
+                                const isDragging = draggedSplitColumn === col;
+                                
+                                return (
+                                  <div
+                                    key={col}
+                                    draggable
+                                    onDragStart={(e) => {
+                                      setDraggedSplitColumn(col);
+                                      e.dataTransfer.effectAllowed = "move";
+                                    }}
+                                    onDragOver={(e) => {
+                                      e.preventDefault();
+                                      e.dataTransfer.dropEffect = "move";
+                                    }}
+                                    onDrop={(e) => {
+                                      e.preventDefault();
+                                      if (draggedSplitColumn && draggedSplitColumn !== col) {
+                                        const newOrder = [...currentOrder];
+                                        const draggedIdx = newOrder.indexOf(draggedSplitColumn);
+                                        const targetIdx = newOrder.indexOf(col);
+                                        newOrder.splice(draggedIdx, 1);
+                                        newOrder.splice(targetIdx, 0, draggedSplitColumn);
+                                        setSplitColumnOrder(newOrder);
+                                      }
+                                      setDraggedSplitColumn(null);
+                                    }}
+                                    onDragEnd={() => {
+                                      setDraggedSplitColumn(null);
+                                    }}
+                                    className={`flex items-center justify-between p-2 rounded-md bg-muted/50 cursor-move transition-all ${
+                                      isDragging ? "opacity-50" : "hover:bg-muted"
+                                    }`}
+                                  >
+                                    <div className="flex items-center space-x-2 flex-1">
+                                      <span className="text-xs text-muted-foreground w-6">{idx + 1}.</span>
+                                      <span className="text-sm font-medium">{col}</span>
+                                      <span className="text-xs text-muted-foreground ml-2">（ドラッグで移動）</span>
+                                    </div>
+                                    <div className="flex items-center space-x-1">
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (idx > 0) {
+                                            const newOrder = [...currentOrder];
+                                            [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
+                                            setSplitColumnOrder(newOrder);
+                                          }
+                                        }}
+                                        disabled={idx === 0}
+                                        className="h-6 w-6"
+                                      >
+                                        <ChevronUp className="h-3 w-3" />
+                                      </Button>
+                                      <Button
+                                        variant="ghost"
+                                        size="icon-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          if (idx < currentOrder.length - 1) {
+                                            const newOrder = [...currentOrder];
+                                            [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
+                                            setSplitColumnOrder(newOrder);
+                                          }
+                                        }}
+                                        disabled={idx === currentOrder.length - 1}
+                                        className="h-6 w-6"
+                                      >
+                                        <ChevronDown className="h-3 w-3" />
+                                      </Button>
+                                    </div>
                                   </div>
-                                  <div className="flex items-center space-x-1">
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (idx > 0) {
-                                          const newOrder = [...currentOrder];
-                                          [newOrder[idx - 1], newOrder[idx]] = [newOrder[idx], newOrder[idx - 1]];
-                                          setSplitColumnOrder(newOrder);
-                                        }
-                                      }}
-                                      disabled={idx === 0}
-                                      className="h-6 w-6"
-                                    >
-                                      <ChevronUp className="h-3 w-3" />
-                                    </Button>
-                                    <Button
-                                      variant="ghost"
-                                      size="icon-sm"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        if (idx < currentOrder.length - 1) {
-                                          const newOrder = [...currentOrder];
-                                          [newOrder[idx], newOrder[idx + 1]] = [newOrder[idx + 1], newOrder[idx]];
-                                          setSplitColumnOrder(newOrder);
-                                        }
-                                      }}
-                                      disabled={idx === currentOrder.length - 1}
-                                      className="h-6 w-6"
-                                    >
-                                      <ChevronDown className="h-3 w-3" />
-                                    </Button>
-                                  </div>
-                                </div>
-                              );
-                            })}
+                                );
+                              })}
+                            </div>
+                            )}
                           </div>
-                        </div>
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-sm font-medium">列のデータ形式</label>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                onClick={() => setShowSplitColumnFormats(!showSplitColumnFormats)}
+                                className="h-6 w-6"
+                              >
+                                {showSplitColumnFormats ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
+                            </div>
+                            {showSplitColumnFormats && (
+                            <div className="space-y-2 rounded-md border border-input bg-background p-3">
+                              {selectedSplitColumns.map((col) => {
+                                const currentFormat = splitColumnFormats[col] || "text";
+                                return (
+                                  <div key={col} className="flex items-center justify-between p-2 rounded-md bg-muted/50">
+                                    <span className="text-sm font-medium flex-1">{col}</span>
+                                    <select
+                                      value={currentFormat}
+                                      onChange={(e) => {
+                                        const newFormats = { ...splitColumnFormats };
+                                        if (e.target.value === "text") {
+                                          delete newFormats[col];
+                                        } else {
+                                          newFormats[col] = e.target.value as DataFormat;
+                                        }
+                                        setSplitColumnFormats(newFormats);
+                                      }}
+                                      className="ml-2 rounded-md border border-input bg-background px-2 py-1 text-sm min-w-[200px]"
+                                    >
+                                      {dataFormats.map((format) => (
+                                        <option key={format.id} value={format.id}>
+                                          {format.name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                            )}
+                          </div>
+                        </>
                       )}
                     </div>
                     
@@ -1949,14 +2435,25 @@ export default function Home() {
                               <div className="text-sm font-medium border-b pb-1">
                                 {part.key_value} ({part.table.rows.length}行)
                               </div>
-                              <PreviewTable data={sortedData} numericColumns={splitNumericColumns.filter(col => filteredData.headers.includes(col))} />
+                              <PreviewTable data={sortedData} numericColumns={splitNumericColumns.filter(col => filteredData.headers.includes(col))} columnFormats={splitColumnFormats} />
                             </div>
                           );
                         })}
                         
                         {/* プレビューセクション（行数一覧） */}
                         <div className="space-y-2">
-                          <label className="text-sm font-medium">プレビュー（行数一覧）</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium">プレビュー（行数一覧）</label>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => setShowRowCountPreview(!showRowCountPreview)}
+                              className="h-6 w-6"
+                            >
+                              {showRowCountPreview ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            </Button>
+                          </div>
+                          {showRowCountPreview && (
                           <div className="max-h-96 overflow-auto rounded-md border">
                             <table className="w-full text-sm">
                               <thead className="bg-muted sticky top-0">
@@ -1982,11 +2479,23 @@ export default function Home() {
                               </div>
                             )}
                           </div>
+                          )}
                         </div>
                         
                         {/* ソートセクション（全ファイル共通） */}
                         <div className="space-y-2 p-3 rounded-md border bg-muted/50">
-                          <label className="text-sm font-medium">ソート（最大3列、選択列のみ）</label>
+                          <div className="flex items-center justify-between">
+                            <label className="text-sm font-medium">ソート（最大3列、選択列のみ）</label>
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              onClick={() => setShowSplitSort(!showSplitSort)}
+                              className="h-6 w-6"
+                            >
+                              {showSplitSort ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                            </Button>
+                          </div>
+                          {showSplitSort && (
                           <div className="space-y-2">
                             {[0, 1, 2].map((idx) => {
                               const sortCol = splitSortColumns[idx] || { column: "", direction: "asc" as const };
@@ -2050,12 +2559,13 @@ export default function Home() {
                                     >
                                       <X className="h-4 w-4" />
                                     </Button>
-                                  )}
-                                </div>
-                              );
-                            })}
-                          </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
+                        )}
+                      </div>
                       </div>
                     )}
                     
