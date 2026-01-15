@@ -1135,14 +1135,21 @@ export default function Home() {
       } catch (error) {
         console.error("Failed to load exceljs, using fallback:", error);
         // フォールバック: 標準のXLSXを使用（スタイルなし）
+        const numericFormats: DataFormat[] = ["number", "number_decimal", "currency_jpy", "currency_usd", "currency_eur"];
         const numericColumnIndices = filteredData.headers
-          .map((header, idx) => splitNumericColumns.includes(header) ? idx : -1)
+          .map((header, idx) => {
+            const format = splitColumnFormats[header] || "text";
+            const isNumeric = numericFormats.includes(format) || splitNumericColumns.includes(header);
+            return isNumeric ? idx : -1;
+          })
           .filter(idx => idx !== -1);
         const worksheetData: any[][] = [
           filteredData.headers,
           ...filteredData.rows.map(row => row.map((cell, cellIdx) => {
             const header = filteredData.headers[cellIdx];
-            if (splitNumericColumns.includes(header)) {
+            const format = splitColumnFormats[header] || "text";
+            const isNumeric = numericFormats.includes(format) || splitNumericColumns.includes(header);
+            if (isNumeric) {
               const num = parseFloat(cell || "0");
               return isNaN(num) ? cell : num;
             }
@@ -1151,7 +1158,9 @@ export default function Home() {
         ];
         if (excelShowTotal && numericColumnIndices.length > 0) {
           const totals: (string | number)[] = filteredData.headers.map((header, idx) => {
-            if (splitNumericColumns.includes(header)) {
+            const format = splitColumnFormats[header] || "text";
+            const isNumeric = numericFormats.includes(format) || splitNumericColumns.includes(header);
+            if (isNumeric) {
               const sum = filteredData.rows.reduce((acc, row) => {
                 const val = parseFloat(row[idx] || "0") || 0;
                 return acc + val;
@@ -1196,12 +1205,26 @@ export default function Home() {
       });
 
       // 合計行を追加（数値列のみ）
+      // 数値形式の列を判定（number, number_decimal, currency_*）
+      const numericFormats: DataFormat[] = ["number", "number_decimal", "currency_jpy", "currency_usd", "currency_eur"];
       const numericColumnIndices = filteredData.headers
-        .map((header, idx) => splitNumericColumns.includes(header) ? idx : -1)
+        .map((header, idx) => {
+          const format = splitColumnFormats[header] || "text";
+          // 後方互換性のため、splitNumericColumnsもチェック
+          const isNumeric = numericFormats.includes(format) || splitNumericColumns.includes(header);
+          return isNumeric ? idx : -1;
+        })
         .filter(idx => idx !== -1);
 
       // 各数値列で小数点以下があるかチェック
       const hasDecimalPlaces = numericColumnIndices.map(colIdx => {
+        const header = filteredData.headers[colIdx];
+        const format = splitColumnFormats[header] || "text";
+        // 小数点を含む形式かどうか
+        if (format === "number_decimal" || format === "currency_usd" || format === "currency_eur") {
+          return true;
+        }
+        // データを確認
         return filteredData.rows.some(row => {
           const val = row[colIdx] || "";
           const num = parseFloat(val);
@@ -1215,7 +1238,10 @@ export default function Home() {
       let totals: (string | number)[] | null = null;
       if (numericColumnIndices.length > 0 && excelShowTotal) {
         totals = filteredData.headers.map((header, idx) => {
-          if (splitNumericColumns.includes(header)) {
+          const format = splitColumnFormats[header] || "text";
+          const isNumeric = numericFormats.includes(format) || splitNumericColumns.includes(header);
+          
+          if (isNumeric) {
             const sum = filteredData.rows.reduce((acc, row) => {
               const val = parseFloat(row[idx] || "0") || 0;
               return acc + val;
